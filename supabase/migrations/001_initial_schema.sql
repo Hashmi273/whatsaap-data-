@@ -1,106 +1,93 @@
 -- ============================================================================
--- IMMENSE WhatsApp Onboarding Portal — Initial Database Schema
+-- IMMENSE WhatsApp Onboarding Portal — Production Database Schema & Security
 -- ============================================================================
 --
--- File:    001_initial_schema.sql
--- Version: 1.0.0
--- Date:    2026-08-24
+-- File:    supabase/migrations/001_initial_schema.sql
+-- Version: 2.0.0 (Production Hardened)
+-- Target:  Supabase PostgreSQL Database
+-- Corporate Domain: immensesmartsolutions.com
 --
--- SETUP INSTRUCTIONS:
--- 1. Open your Supabase project dashboard → SQL Editor
--- 2. Paste this entire file and click "Run"
--- 3. After running, set the encryption key for credential storage:
---      ALTER DATABASE postgres SET app.encryption_key = 'your-secure-256-bit-key-here';
---    (In production, use Supabase Vault instead)
--- 4. Sign up with your @immenseair.com email
--- 5. Promote yourself to super_admin:
---      UPDATE profiles SET role = 'super_admin'
---      WHERE corporate_email = 'your-email@immenseair.com';
---
--- SECURITY NOTES:
--- • RLS is enabled on ALL tables — no anonymous access.
--- • Credentials are encrypted server-side with pgcrypto AES.
--- • Corporate email enforcement happens at the DB trigger level.
--- • Audit logs are immutable — no UPDATE or DELETE policies.
--- • Storage bucket is PRIVATE with strict MIME-type allowlisting.
+-- ============================================================================
+-- SETUP INSTRUCTIONS FOR SUPABASE SQL EDITOR:
+-- 1. Open Supabase Dashboard → SQL Editor → New Query
+-- 2. Paste this entire file and click "Run" (Green Button)
+-- 3. Everything (Tables, RLS, Storage Bucket, Triggers, Encryption) is created automatically.
 -- ============================================================================
 
-
--- ============================================================================
+-- ----------------------------------------------------------------------------
 -- 1. EXTENSIONS
--- ============================================================================
+-- ----------------------------------------------------------------------------
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE EXTENSION IF NOT EXISTS moddatetime;
 
-CREATE EXTENSION IF NOT EXISTS pgcrypto;    -- AES encryption for credentials
-CREATE EXTENSION IF NOT EXISTS moddatetime; -- Automatic updated_at handling
-
-
--- ============================================================================
+-- ----------------------------------------------------------------------------
 -- 2. CUSTOM TYPES
--- ============================================================================
+-- ----------------------------------------------------------------------------
+DO $$ BEGIN
+  CREATE TYPE user_role AS ENUM ('super_admin', 'manager', 'employee', 'viewer');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- User roles with increasing privilege levels
-CREATE TYPE user_role AS ENUM (
-  'super_admin',  -- Full system access, can manage users and config
-  'manager',      -- Can manage onboarding records and view all data
-  'employee',     -- Can view and work on assigned records only
-  'viewer'        -- Read-only access to assigned records
-);
+DO $$ BEGIN
+  CREATE TYPE onboarding_status AS ENUM ('pending', 'in_progress', 'live', 'rejected', 'completed', 'inactive');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- Lifecycle status for each onboarding record
-CREATE TYPE onboarding_status AS ENUM (
-  'pending',      -- Newly created, awaiting assignment
-  'in_progress',  -- Actively being worked on
-  'live',         -- WhatsApp API is live for this brand
-  'rejected',     -- Rejected by Meta or client
-  'completed',    -- Fully completed and archived
-  'inactive'      -- Deactivated / paused
-);
+DO $$ BEGIN
+  CREATE TYPE document_category AS ENUM (
+    'gst_certificate',
+    'pan',
+    'kyc',
+    'whatsapp_approval',
+    'meta_documents',
+    'business_documents',
+    'screenshots',
+    'agreements',
+    'other'
+  );
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
 
--- Document classification categories
-CREATE TYPE document_category AS ENUM (
-  'gst_certificate',     -- GST registration certificate
-  'pan',                 -- PAN card
-  'kyc',                 -- KYC documents
-  'whatsapp_approval',   -- WhatsApp business approval docs
-  'meta_documents',      -- Meta/Facebook business documents
-  'business_documents',  -- General business documents
-  'screenshots',         -- Screenshots of setup steps
-  'agreements',          -- Signed agreements / contracts
-  'other'                -- Uncategorized
-);
-
-
--- ============================================================================
--- 3. TABLES
--- ============================================================================
-
--- --------------------------------------------------------------------------
--- 3a. App Configuration (key-value settings)
--- --------------------------------------------------------------------------
--- Used for server-side configuration such as allowed email domains.
--- Must be created BEFORE triggers that reference it.
+-- ----------------------------------------------------------------------------
+-- 3. APP & VAULT CONFIGURATION TABLES
+-- ----------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS app_config (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 
--- Seed the allowed email domain for corporate enforcement
+-- Set corporate email domain to immensesmartsolutions.com
 INSERT INTO app_config (key, value)
 VALUES ('allowed_email_domain', 'immensesmartsolutions.com')
 ON CONFLICT (key) DO UPDATE SET value = 'immensesmartsolutions.com';
 
+-- Private Secret Vault for AES-256 Master Key (Server-Side Only)
+-- If no runtime setting is provided, an auto-generated 256-bit key is initialized once.
+CREATE TABLE IF NOT EXISTS _vault_internal (
+  id           INT PRIMARY KEY DEFAULT 1,
+  master_key   TEXT NOT NULL,
+  created_at   TIMESTAMPTZ DEFAULT now(),
+  CONSTRAINT single_row_vault CHECK (id = 1)
+);
 
--- --------------------------------------------------------------------------
--- 3b. Profiles (extends auth.users)
--- --------------------------------------------------------------------------
--- Every authenticated user gets a profile row automatically via trigger.
--- SECURITY: The id column references auth.users, ensuring 1:1 mapping.
-CREATE TABLE profiles (
+INSERT INTO _vault_internal (id, master_key)
+VALUES (1, encode(gen_random_bytes(32), 'hex'))
+ON CONFLICT (id) DO NOTHING;
+
+-- ----------------------------------------------------------------------------
+-- 4. CORE BUSINESS TABLES
+-- ----------------------------------------------------------------------------
+
+-- 4a. Profiles (linked 1:1 with auth.users)
+CREATE TABLE IF NOT EXISTS profiles (
   id              UUID        PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   full_name       TEXT        NOT NULL,
   corporate_email TEXT        NOT NULL UNIQUE,
   role            user_role   DEFAULT 'employee',
-  department      TEXT        DEFAULT '',
+  department      TEXT        DEFAULT 'WhatsApp Operations',
   is_active       BOOLEAN     DEFAULT true,
   avatar_url      TEXT,
   last_login      TIMESTAMPTZ,
@@ -108,16 +95,8 @@ CREATE TABLE profiles (
   updated_at      TIMESTAMPTZ DEFAULT now()
 );
 
-COMMENT ON TABLE  profiles IS 'Extended user profiles linked 1:1 with auth.users';
-COMMENT ON COLUMN profiles.role IS 'Access level: super_admin > manager > employee > viewer';
-COMMENT ON COLUMN profiles.is_active IS 'Soft-delete flag — inactive users are denied all access via RLS';
-
-
--- --------------------------------------------------------------------------
--- 3c. Onboarding Records
--- --------------------------------------------------------------------------
--- Core business entity — tracks each brand's WhatsApp onboarding lifecycle.
-CREATE TABLE onboarding_records (
+-- 4b. Onboarding Records
+CREATE TABLE IF NOT EXISTS onboarding_records (
   id                    UUID              PRIMARY KEY DEFAULT gen_random_uuid(),
   brand_name            TEXT              NOT NULL,
   company_name          TEXT              DEFAULT '',
@@ -126,53 +105,38 @@ CREATE TABLE onboarding_records (
   contact_email         TEXT              DEFAULT '',
   contact_number        TEXT              DEFAULT '',
   username              TEXT              DEFAULT '',
-  credential_encrypted  TEXT              DEFAULT '',   -- SECURITY: AES-encrypted, NEVER plaintext
-  platform              TEXT              DEFAULT '',
-  login_url             TEXT              DEFAULT '',
+  credential_encrypted  TEXT              DEFAULT '',   -- AES-256 Encrypted via pgcrypto
+  platform              TEXT              DEFAULT 'Meta Cloud API',
+  login_url             TEXT              DEFAULT 'https://business.facebook.com',
   status                onboarding_status DEFAULT 'pending',
-  assigned_to           UUID              REFERENCES profiles(id),
+  assigned_to           UUID              REFERENCES profiles(id) ON DELETE SET NULL,
   onboarding_date       DATE              DEFAULT CURRENT_DATE,
   notes                 TEXT              DEFAULT '',
-  created_by            UUID              REFERENCES profiles(id),
+  created_by            UUID              REFERENCES profiles(id) ON DELETE SET NULL,
   created_at            TIMESTAMPTZ       DEFAULT now(),
   updated_at            TIMESTAMPTZ       DEFAULT now()
 );
 
-COMMENT ON TABLE  onboarding_records IS 'WhatsApp API onboarding records for client brands';
-COMMENT ON COLUMN onboarding_records.credential_encrypted IS 'AES-encrypted credential — decrypt via get_credential() RPC only';
-
-
--- --------------------------------------------------------------------------
--- 3d. Onboarding Documents
--- --------------------------------------------------------------------------
--- File metadata for documents attached to onboarding records.
--- Actual files live in the 'onboarding-documents' storage bucket.
-CREATE TABLE onboarding_documents (
+-- 4c. Onboarding Documents (Metadata for files in Private Storage)
+CREATE TABLE IF NOT EXISTS onboarding_documents (
   id              UUID              PRIMARY KEY DEFAULT gen_random_uuid(),
   onboarding_id   UUID              NOT NULL REFERENCES onboarding_records(id) ON DELETE CASCADE,
   file_name       TEXT              NOT NULL,
   original_name   TEXT              NOT NULL,
   category        document_category DEFAULT 'other',
   storage_path    TEXT              NOT NULL,
-  mime_type       TEXT              DEFAULT '',
+  mime_type       TEXT              DEFAULT 'application/pdf',
   file_size       BIGINT            DEFAULT 0,
-  uploaded_by     UUID              REFERENCES profiles(id),
+  uploaded_by     UUID              REFERENCES profiles(id) ON DELETE SET NULL,
   created_at      TIMESTAMPTZ       DEFAULT now()
 );
 
-COMMENT ON TABLE onboarding_documents IS 'Document metadata linked to onboarding records; files stored in Supabase Storage';
-
-
--- --------------------------------------------------------------------------
--- 3e. Audit Logs
--- --------------------------------------------------------------------------
--- Immutable append-only log of all security-relevant actions.
--- SECURITY: No UPDATE or DELETE policies — logs cannot be tampered with.
-CREATE TABLE audit_logs (
+-- 4d. Audit Logs (Immutable compliance ledger)
+CREATE TABLE IF NOT EXISTS audit_logs (
   id          UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
-  user_id     UUID        REFERENCES profiles(id),
+  user_id     UUID        REFERENCES profiles(id) ON DELETE SET NULL,
   action      TEXT        NOT NULL,
-  entity_type TEXT        NOT NULL,   -- e.g. 'onboarding', 'document', 'employee', 'credential', 'auth'
+  entity_type TEXT        NOT NULL,
   entity_id   TEXT,
   metadata    JSONB       DEFAULT '{}',
   ip_address  TEXT,
@@ -180,42 +144,31 @@ CREATE TABLE audit_logs (
   created_at  TIMESTAMPTZ DEFAULT now()
 );
 
-COMMENT ON TABLE  audit_logs IS 'Immutable audit trail — no updates or deletes allowed';
-COMMENT ON COLUMN audit_logs.entity_type IS 'Category: onboarding | document | employee | credential | auth';
-COMMENT ON COLUMN audit_logs.metadata IS 'Structured JSON payload with action-specific details';
+-- ----------------------------------------------------------------------------
+-- 5. PERFORMANCE INDEXES
+-- ----------------------------------------------------------------------------
+CREATE INDEX IF NOT EXISTS idx_onboarding_status   ON onboarding_records(status);
+CREATE INDEX IF NOT EXISTS idx_onboarding_assigned ON onboarding_records(assigned_to);
+CREATE INDEX IF NOT EXISTS idx_onboarding_brand    ON onboarding_records(brand_name);
+CREATE INDEX IF NOT EXISTS idx_onboarding_date     ON onboarding_records(onboarding_date);
+CREATE INDEX IF NOT EXISTS idx_onboarding_created  ON onboarding_records(created_at);
 
+CREATE INDEX IF NOT EXISTS idx_documents_onboarding ON onboarding_documents(onboarding_id);
+CREATE INDEX IF NOT EXISTS idx_documents_category   ON onboarding_documents(category);
 
--- ============================================================================
--- 4. INDEXES
--- ============================================================================
+CREATE INDEX IF NOT EXISTS idx_audit_user    ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_entity  ON audit_logs(entity_type, entity_id);
+CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_logs(created_at);
 
--- Onboarding Records indexes
-CREATE INDEX idx_onboarding_status   ON onboarding_records(status);
-CREATE INDEX idx_onboarding_assigned ON onboarding_records(assigned_to);
-CREATE INDEX idx_onboarding_brand    ON onboarding_records(brand_name);
-CREATE INDEX idx_onboarding_date     ON onboarding_records(onboarding_date);
-CREATE INDEX idx_onboarding_created  ON onboarding_records(created_at);
+CREATE INDEX IF NOT EXISTS idx_profiles_email  ON profiles(corporate_email);
+CREATE INDEX IF NOT EXISTS idx_profiles_role   ON profiles(role);
+CREATE INDEX IF NOT EXISTS idx_profiles_active ON profiles(is_active);
 
--- Documents indexes
-CREATE INDEX idx_documents_onboarding ON onboarding_documents(onboarding_id);
-CREATE INDEX idx_documents_category   ON onboarding_documents(category);
+-- ----------------------------------------------------------------------------
+-- 6. AUTOMATED TRIGGERS
+-- ----------------------------------------------------------------------------
 
--- Audit Logs indexes
-CREATE INDEX idx_audit_user    ON audit_logs(user_id);
-CREATE INDEX idx_audit_entity  ON audit_logs(entity_type, entity_id);
-CREATE INDEX idx_audit_created ON audit_logs(created_at);
-
--- Profiles indexes
-CREATE INDEX idx_profiles_email  ON profiles(corporate_email);
-CREATE INDEX idx_profiles_role   ON profiles(role);
-CREATE INDEX idx_profiles_active ON profiles(is_active);
-
-
--- ============================================================================
--- 5. AUTO-UPDATE TRIGGER FOR updated_at
--- ============================================================================
-
--- Generic trigger function that sets updated_at = now() on every UPDATE.
+-- 6a. updated_at auto updater
 CREATE OR REPLACE FUNCTION update_updated_at()
 RETURNS TRIGGER AS $$
 BEGIN
@@ -224,108 +177,103 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+DROP TRIGGER IF EXISTS update_profiles_updated_at ON profiles;
 CREATE TRIGGER update_profiles_updated_at
   BEFORE UPDATE ON profiles
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
+DROP TRIGGER IF EXISTS update_onboarding_updated_at ON onboarding_records;
 CREATE TRIGGER update_onboarding_updated_at
   BEFORE UPDATE ON onboarding_records
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
-
--- ============================================================================
--- 6. HANDLE NEW USER TRIGGER (auto-create profile on signup)
--- ============================================================================
-
--- SECURITY: SECURITY DEFINER so the function runs with table-owner privileges,
--- allowing it to INSERT into profiles even though the new user has no RLS access yet.
-CREATE OR REPLACE FUNCTION handle_new_user()
-RETURNS TRIGGER AS $$
-BEGIN
-  INSERT INTO public.profiles (id, full_name, corporate_email, role)
-  VALUES (
-    NEW.id,
-    COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
-    NEW.email,
-    'employee'
-  );
-  RETURN NEW;
-END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
-
-CREATE TRIGGER on_auth_user_created
-  AFTER INSERT ON auth.users
-  FOR EACH ROW
-  EXECUTE FUNCTION handle_new_user();
-
-
--- ============================================================================
--- 7. CORPORATE EMAIL ENFORCEMENT TRIGGER (SERVER-SIDE)
--- ============================================================================
--- CRITICAL SECURITY CONTROL: Prevents registration from non-corporate emails.
--- This runs at the database level so it cannot be bypassed by the frontend.
--- The allowed domain is stored in app_config for easy management.
-
+-- 6b. Corporate email restriction (SERVER-SIDE ENFORCEMENT)
 CREATE OR REPLACE FUNCTION enforce_corporate_email()
 RETURNS TRIGGER AS $$
 DECLARE
-  allowed_domain TEXT;
-  email_domain   TEXT;
+  v_allowed_domain TEXT;
+  v_email_domain   TEXT;
 BEGIN
-  -- Get the allowed domain from config
-  SELECT value INTO allowed_domain
+  SELECT value INTO v_allowed_domain
   FROM public.app_config
   WHERE key = 'allowed_email_domain';
 
-  -- Extract domain from email
-  email_domain := split_part(NEW.email, '@', 2);
+  IF v_allowed_domain IS NULL THEN
+    v_allowed_domain := 'immensesmartsolutions.com';
+  END IF;
 
-  -- Reject if domain doesn't match
-  IF email_domain != allowed_domain THEN
-    RAISE EXCEPTION 'Registration is restricted to corporate email addresses (@%)', allowed_domain;
+  v_email_domain := split_part(NEW.email, '@', 2);
+
+  IF lower(v_email_domain) != lower(v_allowed_domain) THEN
+    RAISE EXCEPTION 'Registration rejected: Only verified corporate accounts (@%) are permitted.', v_allowed_domain;
   END IF;
 
   RETURN NEW;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
+DROP TRIGGER IF EXISTS enforce_corporate_email_trigger ON auth.users;
 CREATE TRIGGER enforce_corporate_email_trigger
   BEFORE INSERT ON auth.users
   FOR EACH ROW
   EXECUTE FUNCTION enforce_corporate_email();
 
+-- 6c. Auto-create Profile row upon auth.users signup
+CREATE OR REPLACE FUNCTION handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.profiles (id, full_name, corporate_email, role, department, is_active)
+  VALUES (
+    NEW.id,
+    COALESCE(NEW.raw_user_meta_data->>'full_name', split_part(NEW.email, '@', 1)),
+    NEW.email,
+    'employee',
+    'WhatsApp Operations',
+    true
+  )
+  ON CONFLICT (id) DO NOTHING;
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- ============================================================================
--- 8. CREDENTIAL ENCRYPTION / DECRYPTION FUNCTIONS
--- ============================================================================
--- Uses pgcrypto AES encryption with a server-side key stored in PostgreSQL
--- runtime settings (current_setting('app.encryption_key')).
---
--- SECURITY:
--- • The encryption key is NEVER exposed to the frontend.
--- • Functions are SECURITY DEFINER so only the DB owner can see the key.
--- • In production, use Supabase Vault for key management.
--- • Setup: ALTER DATABASE postgres SET app.encryption_key = 'your-secure-256-bit-key-here';
+DROP TRIGGER IF EXISTS on_auth_user_created ON auth.users;
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW
+  EXECUTE FUNCTION handle_new_user();
 
+-- ----------------------------------------------------------------------------
+-- 7. AES-256 SERVER-SIDE ENCRYPTION (NO PLAINTEXT FALLBACK)
+-- ----------------------------------------------------------------------------
+
+-- Helper function to fetch the secure server key
+CREATE OR REPLACE FUNCTION _get_vault_key()
+RETURNS TEXT AS $$
+DECLARE
+  v_key TEXT;
+BEGIN
+  v_key := current_setting('app.encryption_key', true);
+  IF v_key IS NULL OR v_key = '' THEN
+    SELECT master_key INTO v_key FROM _vault_internal WHERE id = 1;
+  END IF;
+  RETURN v_key;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Encrypt plain text using pgcrypto AES
 CREATE OR REPLACE FUNCTION encrypt_credential(plain_text TEXT)
 RETURNS TEXT AS $$
 DECLARE
-  enc_key TEXT;
+  v_key TEXT;
 BEGIN
-  -- Get encryption key from server-side DB setting
-  -- SECURITY: current_setting is only accessible server-side
-  enc_key := current_setting('app.encryption_key', true);
-
-  IF enc_key IS NULL OR enc_key = '' THEN
-    -- SECURITY WARNING: In production, always set app.encryption_key
-    -- This fallback marks the value so it can be identified and re-encrypted later
-    RETURN 'UNENCRYPTED:' || plain_text;
+  IF plain_text IS NULL OR plain_text = '' THEN
+    RETURN '';
   END IF;
-
+  v_key := _get_vault_key();
   RETURN encode(
     encrypt(
       convert_to(plain_text, 'utf8'),
-      convert_to(enc_key, 'utf8'),
+      convert_to(v_key, 'utf8'),
       'aes'
     ),
     'base64'
@@ -333,86 +281,58 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION encrypt_credential IS 'Encrypts a plaintext credential using AES via pgcrypto. Key from app.encryption_key.';
-
-
+-- Decrypt ciphertext
 CREATE OR REPLACE FUNCTION decrypt_credential(cipher_text TEXT)
 RETURNS TEXT AS $$
 DECLARE
-  enc_key TEXT;
+  v_key TEXT;
 BEGIN
-  -- Handle NULL or empty input gracefully
   IF cipher_text IS NULL OR cipher_text = '' THEN
     RETURN '';
   END IF;
-
-  -- Handle unencrypted fallback (development mode)
-  IF starts_with(cipher_text, 'UNENCRYPTED:') THEN
-    RETURN substring(cipher_text FROM 13);
-  END IF;
-
-  -- Get encryption key from server-side DB setting
-  enc_key := current_setting('app.encryption_key', true);
-
-  IF enc_key IS NULL OR enc_key = '' THEN
-    RETURN '[ENCRYPTION KEY NOT SET]';
-  END IF;
-
-  RETURN convert_from(
-    decrypt(
-      decode(cipher_text, 'base64'),
-      convert_to(enc_key, 'utf8'),
-      'aes'
-    ),
-    'utf8'
-  );
+  v_key := _get_vault_key();
+  BEGIN
+    RETURN convert_from(
+      decrypt(
+        decode(cipher_text, 'base64'),
+        convert_to(v_key, 'utf8'),
+        'aes'
+      ),
+      'utf8'
+    );
+  EXCEPTION WHEN OTHERS THEN
+    RETURN '[Encrypted Secret]';
+  END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION decrypt_credential IS 'Decrypts an AES-encrypted credential. Key from app.encryption_key.';
+-- ----------------------------------------------------------------------------
+-- 8. RPC FUNCTIONS (SECURE CREDENTIAL AUDIT & DASHBOARD STATS)
+-- ----------------------------------------------------------------------------
 
-
--- ============================================================================
--- 9. RPC FUNCTIONS
--- ============================================================================
-
--- --------------------------------------------------------------------------
--- 9a. get_credential — Decrypt and return credential with permission check
--- --------------------------------------------------------------------------
--- SECURITY: Only super_admin, manager, or the assigned employee can view.
--- Every access is logged to the audit trail for compliance.
+-- Decrypt and retrieve credential with permission check and audit log
 CREATE OR REPLACE FUNCTION get_credential(record_id UUID)
 RETURNS TABLE(username TEXT, credential TEXT, platform TEXT, login_url TEXT) AS $$
 DECLARE
   v_user_role user_role;
   v_is_assigned BOOLEAN;
 BEGIN
-  -- Get caller's role
-  SELECT p.role INTO v_user_role
-  FROM profiles p
-  WHERE p.id = auth.uid();
+  SELECT p.role INTO v_user_role FROM profiles p WHERE p.id = auth.uid();
+  SELECT (r.assigned_to = auth.uid()) INTO v_is_assigned FROM onboarding_records r WHERE r.id = record_id;
 
-  -- Check if user is assigned to this record
-  SELECT (r.assigned_to = auth.uid()) INTO v_is_assigned
-  FROM onboarding_records r
-  WHERE r.id = record_id;
-
-  -- SECURITY: Permission gate — reject unauthorized access
   IF v_user_role NOT IN ('super_admin', 'manager') AND NOT COALESCE(v_is_assigned, false) THEN
-    RAISE EXCEPTION 'Unauthorized: You do not have permission to view credentials';
+    RAISE EXCEPTION 'Access Denied: Insufficient privileges to access platform secrets.';
   END IF;
 
-  -- AUDIT: Log every credential access for compliance
   INSERT INTO audit_logs (user_id, action, entity_type, entity_id, metadata)
   VALUES (
     auth.uid(),
     'credential_viewed',
     'credential',
     record_id::TEXT,
-    jsonb_build_object('action_type', 'view')
+    jsonb_build_object('action_type', 'view', 'timestamp', now())
   );
 
-  -- Return decrypted credential data
   RETURN QUERY
   SELECT
     r.username,
@@ -424,12 +344,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION get_credential IS 'Returns decrypted credential for authorized users. All access is audit-logged.';
-
-
--- --------------------------------------------------------------------------
--- 9b. log_credential_copy — Audit trail for clipboard copy events
--- --------------------------------------------------------------------------
+-- Log credential copy event
 CREATE OR REPLACE FUNCTION log_credential_copy(record_id UUID)
 RETURNS void AS $$
 BEGIN
@@ -439,18 +354,12 @@ BEGIN
     'credential_copied',
     'credential',
     record_id::TEXT,
-    jsonb_build_object('action_type', 'copy')
+    jsonb_build_object('action_type', 'copy', 'timestamp', now())
   );
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION log_credential_copy IS 'Logs a credential copy-to-clipboard event to the audit trail.';
-
-
--- --------------------------------------------------------------------------
--- 9c. get_dashboard_stats — Aggregated onboarding status counts
--- --------------------------------------------------------------------------
--- Returns counts filtered by the caller's access level (RLS-aware).
+-- Aggregated dashboard statistics
 CREATE OR REPLACE FUNCTION get_dashboard_stats()
 RETURNS TABLE(
   total       BIGINT,
@@ -463,15 +372,14 @@ RETURNS TABLE(
 BEGIN
   RETURN QUERY
   SELECT
-    COUNT(*)::BIGINT                                          AS total,
-    COUNT(*) FILTER (WHERE status = 'pending')::BIGINT        AS pending,
-    COUNT(*) FILTER (WHERE status = 'in_progress')::BIGINT    AS in_progress,
-    COUNT(*) FILTER (WHERE status = 'live')::BIGINT           AS live,
-    COUNT(*) FILTER (WHERE status = 'completed')::BIGINT      AS completed,
-    COUNT(*) FILTER (WHERE status = 'rejected')::BIGINT       AS rejected
+    COUNT(*)::BIGINT                                       AS total,
+    COUNT(*) FILTER (WHERE status = 'pending')::BIGINT     AS pending,
+    COUNT(*) FILTER (WHERE status = 'in_progress')::BIGINT AS in_progress,
+    COUNT(*) FILTER (WHERE status = 'live')::BIGINT        AS live,
+    COUNT(*) FILTER (WHERE status = 'completed')::BIGINT   AS completed,
+    COUNT(*) FILTER (WHERE status = 'rejected')::BIGINT    AS rejected
   FROM onboarding_records
   WHERE (
-    -- Admin/Manager see all records; others see only their assigned records
     EXISTS (
       SELECT 1 FROM profiles
       WHERE id = auth.uid() AND role IN ('super_admin', 'manager')
@@ -481,28 +389,17 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
-COMMENT ON FUNCTION get_dashboard_stats IS 'Returns aggregated onboarding status counts scoped to caller permissions.';
-
-
--- ============================================================================
--- 10. ROW LEVEL SECURITY (RLS) POLICIES
--- ============================================================================
-
--- --------------------------------------------------------------------------
--- 10a. Enable RLS on ALL tables
--- --------------------------------------------------------------------------
+-- ----------------------------------------------------------------------------
+-- 9. ROW LEVEL SECURITY (RLS) POLICIES
+-- ----------------------------------------------------------------------------
 ALTER TABLE profiles             ENABLE ROW LEVEL SECURITY;
 ALTER TABLE onboarding_records   ENABLE ROW LEVEL SECURITY;
 ALTER TABLE onboarding_documents ENABLE ROW LEVEL SECURITY;
 ALTER TABLE audit_logs           ENABLE ROW LEVEL SECURITY;
 ALTER TABLE app_config           ENABLE ROW LEVEL SECURITY;
+ALTER TABLE _vault_internal      ENABLE ROW LEVEL SECURITY;
 
-
--- --------------------------------------------------------------------------
--- 10b. Helper functions for RLS policies
--- --------------------------------------------------------------------------
-
--- Returns TRUE if the calling user has is_active = true
+-- Helper RLS functions
 CREATE OR REPLACE FUNCTION is_active_user()
 RETURNS BOOLEAN AS $$
   SELECT EXISTS (
@@ -510,43 +407,30 @@ RETURNS BOOLEAN AS $$
   );
 $$ LANGUAGE sql SECURITY DEFINER;
 
-COMMENT ON FUNCTION is_active_user IS 'RLS helper: returns true if the authenticated user is active';
-
--- Returns the calling user's role enum value
 CREATE OR REPLACE FUNCTION get_user_role()
 RETURNS user_role AS $$
   SELECT role FROM profiles WHERE id = auth.uid();
 $$ LANGUAGE sql SECURITY DEFINER;
 
-COMMENT ON FUNCTION get_user_role IS 'RLS helper: returns the authenticated user''s role';
-
-
--- --------------------------------------------------------------------------
--- 10c. PROFILES policies
--- --------------------------------------------------------------------------
-
--- Users can read all profiles if active (needed for assignment dropdowns, team lists)
+-- 9a. Profiles Policies
+DROP POLICY IF EXISTS profiles_select ON profiles;
 CREATE POLICY profiles_select ON profiles
   FOR SELECT
   USING (is_active_user());
 
--- Users can update their OWN profile (name, avatar, department)
+DROP POLICY IF EXISTS profiles_update_own ON profiles;
 CREATE POLICY profiles_update_own ON profiles
   FOR UPDATE
   USING (id = auth.uid() AND is_active_user())
   WITH CHECK (id = auth.uid());
 
--- Super admins have full CRUD on all profiles (role changes, deactivation, etc.)
+DROP POLICY IF EXISTS profiles_admin_all ON profiles;
 CREATE POLICY profiles_admin_all ON profiles
   FOR ALL
   USING (get_user_role() = 'super_admin' AND is_active_user());
 
-
--- --------------------------------------------------------------------------
--- 10d. ONBOARDING RECORDS policies
--- --------------------------------------------------------------------------
-
--- SELECT: Admin/Manager see all; Employee/Viewer see only assigned records
+-- 9b. Onboarding Records Policies
+DROP POLICY IF EXISTS onboarding_select ON onboarding_records;
 CREATE POLICY onboarding_select ON onboarding_records
   FOR SELECT
   USING (
@@ -556,33 +440,29 @@ CREATE POLICY onboarding_select ON onboarding_records
     )
   );
 
--- INSERT: Only Admin and Manager can create new onboarding records
+DROP POLICY IF EXISTS onboarding_insert ON onboarding_records;
 CREATE POLICY onboarding_insert ON onboarding_records
   FOR INSERT
   WITH CHECK (
     is_active_user() AND get_user_role() IN ('super_admin', 'manager')
   );
 
--- UPDATE: Only Admin and Manager can modify records
+DROP POLICY IF EXISTS onboarding_update ON onboarding_records;
 CREATE POLICY onboarding_update ON onboarding_records
   FOR UPDATE
   USING (
     is_active_user() AND get_user_role() IN ('super_admin', 'manager')
   );
 
--- DELETE: Only super_admin can delete records (hard delete)
+DROP POLICY IF EXISTS onboarding_delete ON onboarding_records;
 CREATE POLICY onboarding_delete ON onboarding_records
   FOR DELETE
   USING (
     is_active_user() AND get_user_role() = 'super_admin'
   );
 
-
--- --------------------------------------------------------------------------
--- 10e. ONBOARDING DOCUMENTS policies
--- --------------------------------------------------------------------------
-
--- SELECT: Can view documents of records they have access to
+-- 9c. Onboarding Documents Policies
+DROP POLICY IF EXISTS documents_select ON onboarding_documents;
 CREATE POLICY documents_select ON onboarding_documents
   FOR SELECT
   USING (
@@ -596,7 +476,7 @@ CREATE POLICY documents_select ON onboarding_documents
     )
   );
 
--- INSERT: Admin, Manager, or assigned Employee can upload documents
+DROP POLICY IF EXISTS documents_insert ON onboarding_documents;
 CREATE POLICY documents_insert ON onboarding_documents
   FOR INSERT
   WITH CHECK (
@@ -610,25 +490,20 @@ CREATE POLICY documents_insert ON onboarding_documents
     )
   );
 
--- DELETE: Only Admin and Manager can remove documents
+DROP POLICY IF EXISTS documents_delete ON onboarding_documents;
 CREATE POLICY documents_delete ON onboarding_documents
   FOR DELETE
   USING (
     is_active_user() AND get_user_role() IN ('super_admin', 'manager')
   );
 
-
--- --------------------------------------------------------------------------
--- 10f. AUDIT LOGS policies
--- --------------------------------------------------------------------------
--- SECURITY: Audit logs are IMMUTABLE — no UPDATE or DELETE policies exist.
-
--- INSERT: Any authenticated user can write audit entries
+-- 9d. Audit Logs Policies (Append-only)
+DROP POLICY IF EXISTS audit_insert ON audit_logs;
 CREATE POLICY audit_insert ON audit_logs
   FOR INSERT
   WITH CHECK (auth.uid() IS NOT NULL);
 
--- SELECT: Admin/Manager see all logs; others see only their own actions
+DROP POLICY IF EXISTS audit_select ON audit_logs;
 CREATE POLICY audit_select ON audit_logs
   FOR SELECT
   USING (
@@ -638,36 +513,26 @@ CREATE POLICY audit_select ON audit_logs
     )
   );
 
--- NOTE: No UPDATE or DELETE policies — audit logs are append-only by design.
-
-
--- --------------------------------------------------------------------------
--- 10g. APP CONFIG policies
--- --------------------------------------------------------------------------
-
--- Anyone (authenticated or not) can read config values
+-- 9e. App Config Policies
+DROP POLICY IF EXISTS config_select ON app_config;
 CREATE POLICY config_select ON app_config
   FOR SELECT
   USING (true);
 
--- Only super_admin can modify config
+DROP POLICY IF EXISTS config_admin ON app_config;
 CREATE POLICY config_admin ON app_config
   FOR ALL
   USING (get_user_role() = 'super_admin' AND is_active_user());
 
-
--- ============================================================================
--- 11. STORAGE BUCKET SETUP
--- ============================================================================
-
--- Create a PRIVATE storage bucket for onboarding documents.
--- SECURITY: Public access is disabled; all access is controlled via storage policies.
+-- ----------------------------------------------------------------------------
+-- 10. PRIVATE STORAGE BUCKET CONFIGURATION
+-- ----------------------------------------------------------------------------
 INSERT INTO storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 VALUES (
   'onboarding-documents',
   'onboarding-documents',
-  false,       -- PRIVATE bucket — no public URLs
-  10485760,    -- 10 MB max file size
+  false,       -- Strict Private Bucket
+  10485760,    -- 10 MB limit
   ARRAY[
     'application/pdf',
     'image/jpeg',
@@ -678,16 +543,13 @@ VALUES (
     'application/vnd.ms-excel',
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
   ]
-) ON CONFLICT (id) DO NOTHING;
+)
+ON CONFLICT (id) DO UPDATE SET
+  public = false,
+  file_size_limit = 10485760;
 
-
--- --------------------------------------------------------------------------
--- 11a. Storage RLS policies
--- --------------------------------------------------------------------------
--- Files are organized as: onboarding-documents/{onboarding_record_id}/{filename}
--- Access is scoped by role and record assignment.
-
--- SELECT: Download files for accessible records
+-- Storage Objects Policies
+DROP POLICY IF EXISTS storage_select ON storage.objects;
 CREATE POLICY storage_select ON storage.objects
   FOR SELECT
   USING (
@@ -703,7 +565,7 @@ CREATE POLICY storage_select ON storage.objects
     )
   );
 
--- INSERT: Upload files to accessible records
+DROP POLICY IF EXISTS storage_insert ON storage.objects;
 CREATE POLICY storage_insert ON storage.objects
   FOR INSERT
   WITH CHECK (
@@ -719,7 +581,7 @@ CREATE POLICY storage_insert ON storage.objects
     )
   );
 
--- DELETE: Only Admin and Manager can remove files from storage
+DROP POLICY IF EXISTS storage_delete ON storage.objects;
 CREATE POLICY storage_delete ON storage.objects
   FOR DELETE
   USING (
@@ -728,41 +590,6 @@ CREATE POLICY storage_delete ON storage.objects
     AND get_user_role() IN ('super_admin', 'manager')
   );
 
-
 -- ============================================================================
--- 12. DEMO / SEED DATA
--- ============================================================================
--- NOTE: This section contains NO real credentials, documents, or company data.
--- It exists solely to provide sample data for UI development and testing.
---
--- FIRST-TIME SETUP:
--- 1. Sign up via the app with your @immenseair.com email
--- 2. Promote yourself to super_admin:
---
---    UPDATE profiles SET role = 'super_admin'
---    WHERE corporate_email = 'your-email@immenseair.com';
---
--- 3. Use the app UI to create real onboarding records.
--- ============================================================================
-
-
--- ============================================================================
--- MIGRATION COMPLETE
--- ============================================================================
--- Summary of objects created:
---
---   Extensions:  pgcrypto, moddatetime
---   Types:       user_role, onboarding_status, document_category
---   Tables:      app_config, profiles, onboarding_records,
---                onboarding_documents, audit_logs
---   Indexes:     13 indexes across all tables
---   Functions:   update_updated_at, handle_new_user, enforce_corporate_email,
---                encrypt_credential, decrypt_credential, get_credential,
---                log_credential_copy, get_dashboard_stats,
---                is_active_user, get_user_role
---   Triggers:    update_profiles_updated_at, update_onboarding_updated_at,
---                on_auth_user_created, enforce_corporate_email_trigger
---   RLS:         Enabled on all 5 tables with 15 policies
---   Storage:     onboarding-documents bucket (private, 10MB limit)
---                with 3 storage policies
+-- MIGRATION INITIALIZATION COMPLETE
 -- ============================================================================

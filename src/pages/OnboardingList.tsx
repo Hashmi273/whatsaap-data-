@@ -63,9 +63,9 @@ export function OnboardingList() {
         .order('full_name');
       if (error || !data || data.length === 0) {
         return [
-          { id: 'demo-super-admin-001', full_name: 'Vikram Mehta', corporate_email: 'admin@immenseair.com' },
-          { id: 'demo-manager-002', full_name: 'Priya Sharma', corporate_email: 'manager@immenseair.com' },
-          { id: 'demo-employee-003', full_name: 'Arjun Verma', corporate_email: 'employee@immenseair.com' },
+          { id: 'immense-admin-001', full_name: 'Immense Super Admin', corporate_email: 'support@immensesmartsolutions.com' },
+          { id: 'immense-manager-002', full_name: 'Operations Manager', corporate_email: 'manager@immensesmartsolutions.com' },
+          { id: 'immense-employee-003', full_name: 'Support Executive', corporate_email: 'employee@immensesmartsolutions.com' },
         ] as Profile[];
       }
       return data as Profile[];

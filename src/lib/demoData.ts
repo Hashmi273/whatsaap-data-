@@ -1,4 +1,4 @@
-import type { OnboardingRecord, OnboardingDocument } from '@/types/database';
+import type { OnboardingRecord } from '@/types/database';
 
 export const INITIAL_DEMO_ONBOARDINGS: OnboardingRecord[] = [
   {
@@ -14,10 +14,10 @@ export const INITIAL_DEMO_ONBOARDINGS: OnboardingRecord[] = [
     platform: 'Meta Cloud API (WABA)',
     login_url: 'https://business.facebook.com/wa/manage',
     status: 'live',
-    assigned_to: 'demo-employee-003',
+    assigned_to: 'immense-employee-003',
     onboarding_date: '2026-06-12',
     notes: 'Approved for 500k monthly interactive utility & marketing notifications.',
-    created_by: 'demo-super-admin-001',
+    created_by: 'immense-admin-001',
     created_at: '2026-06-12T10:00:00Z',
     updated_at: '2026-08-20T14:30:00Z',
   },
@@ -34,10 +34,10 @@ export const INITIAL_DEMO_ONBOARDINGS: OnboardingRecord[] = [
     platform: 'Meta Cloud API',
     login_url: 'https://business.facebook.com',
     status: 'in_progress',
-    assigned_to: 'demo-employee-003',
+    assigned_to: 'immense-employee-003',
     onboarding_date: '2026-08-01',
     notes: 'Green tick verified; waiting for message template approval for Nexon EV service alerts.',
-    created_by: 'demo-manager-002',
+    created_by: 'immense-manager-002',
     created_at: '2026-08-01T11:00:00Z',
     updated_at: '2026-08-22T09:15:00Z',
   },
@@ -54,10 +54,10 @@ export const INITIAL_DEMO_ONBOARDINGS: OnboardingRecord[] = [
     platform: 'Gupshup Enterprise Gateway',
     login_url: 'https://enterprise.gupshup.io',
     status: 'pending',
-    assigned_to: 'demo-manager-002',
+    assigned_to: 'immense-manager-002',
     onboarding_date: '2026-08-20',
     notes: 'Medical lab report dispatch bot setup in progress.',
-    created_by: 'demo-super-admin-001',
+    created_by: 'immense-admin-001',
     created_at: '2026-08-20T16:00:00Z',
     updated_at: '2026-08-20T16:00:00Z',
   },
@@ -74,10 +74,10 @@ export const INITIAL_DEMO_ONBOARDINGS: OnboardingRecord[] = [
     platform: 'Meta Cloud API',
     login_url: 'https://business.facebook.com',
     status: 'completed',
-    assigned_to: 'demo-employee-003',
+    assigned_to: 'immense-employee-003',
     onboarding_date: '2026-05-18',
     notes: 'E-commerce WhatsApp store live with UPI Pay on WhatsApp enabled.',
-    created_by: 'demo-manager-002',
+    created_by: 'immense-manager-002',
     created_at: '2026-05-18T12:00:00Z',
     updated_at: '2026-07-10T11:00:00Z',
   },
@@ -93,7 +93,7 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
     storage_path: 'rec-001-prestige/gst_certificate/Prestige_GST.pdf',
     mime_type: 'application/pdf',
     file_size: 245000,
-    uploaded_by: 'demo-super-admin-001',
+    uploaded_by: 'immense-admin-001',
     created_at: '2026-06-12T10:30:00Z',
     onboarding: {
       id: 'rec-001-prestige',
@@ -103,9 +103,9 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
       status: 'live',
     },
     uploader_profile: {
-      id: 'demo-super-admin-001',
-      full_name: 'Vikram Mehta',
-      corporate_email: 'admin@immenseair.com',
+      id: 'immense-admin-001',
+      full_name: 'Immense Super Admin',
+      corporate_email: 'support@immensesmartsolutions.com',
     },
   },
   {
@@ -117,7 +117,7 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
     storage_path: 'rec-001-prestige/pan/Prestige_PAN.png',
     mime_type: 'image/png',
     file_size: 512000,
-    uploaded_by: 'demo-super-admin-001',
+    uploaded_by: 'immense-admin-001',
     created_at: '2026-06-12T10:35:00Z',
     onboarding: {
       id: 'rec-001-prestige',
@@ -127,9 +127,9 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
       status: 'live',
     },
     uploader_profile: {
-      id: 'demo-super-admin-001',
-      full_name: 'Vikram Mehta',
-      corporate_email: 'admin@immenseair.com',
+      id: 'immense-admin-001',
+      full_name: 'Immense Super Admin',
+      corporate_email: 'support@immensesmartsolutions.com',
     },
   },
   {
@@ -141,7 +141,7 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
     storage_path: 'rec-001-prestige/whatsapp_approval/Meta_Approval.pdf',
     mime_type: 'application/pdf',
     file_size: 380000,
-    uploaded_by: 'demo-manager-002',
+    uploaded_by: 'immense-manager-002',
     created_at: '2026-06-15T14:00:00Z',
     onboarding: {
       id: 'rec-001-prestige',
@@ -151,9 +151,9 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
       status: 'live',
     },
     uploader_profile: {
-      id: 'demo-manager-002',
-      full_name: 'Priya Sharma',
-      corporate_email: 'manager@immenseair.com',
+      id: 'immense-manager-002',
+      full_name: 'Operations Manager',
+      corporate_email: 'manager@immensesmartsolutions.com',
     },
   },
   {
@@ -165,7 +165,7 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
     storage_path: 'rec-002-tata/gst_certificate/Tata_GST.pdf',
     mime_type: 'application/pdf',
     file_size: 420000,
-    uploaded_by: 'demo-manager-002',
+    uploaded_by: 'immense-manager-002',
     created_at: '2026-08-01T11:20:00Z',
     onboarding: {
       id: 'rec-002-tata',
@@ -175,9 +175,9 @@ export const INITIAL_DEMO_DOCUMENTS: any[] = [
       status: 'in_progress',
     },
     uploader_profile: {
-      id: 'demo-manager-002',
-      full_name: 'Priya Sharma',
-      corporate_email: 'manager@immenseair.com',
+      id: 'immense-manager-002',
+      full_name: 'Operations Manager',
+      corporate_email: 'manager@immensesmartsolutions.com',
     },
   },
 ];

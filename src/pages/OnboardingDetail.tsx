@@ -114,9 +114,9 @@ export function OnboardingDetail() {
       return {
         ...demoMatch,
         assigned_profile: {
-          id: 'demo-employee-003',
-          full_name: 'Arjun Verma',
-          corporate_email: 'employee@immenseair.com',
+          id: 'immense-employee-003',
+          full_name: 'Support Executive',
+          corporate_email: 'employee@immensesmartsolutions.com',
           role: 'employee',
           department: 'Client Success',
           is_active: true,
@@ -126,11 +126,11 @@ export function OnboardingDetail() {
           updated_at: '',
         },
         creator_profile: {
-          id: 'demo-super-admin-001',
-          full_name: 'Vikram Mehta',
-          corporate_email: 'admin@immenseair.com',
+          id: 'immense-admin-001',
+          full_name: 'Immense Super Admin',
+          corporate_email: 'support@immensesmartsolutions.com',
           role: 'super_admin',
-          department: 'Executive Management',
+          department: 'Executive Leadership',
           is_active: true,
           avatar_url: null,
           last_login: null,
