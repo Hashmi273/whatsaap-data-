@@ -11,7 +11,7 @@ Production-ready enterprise internal web portal built for **Immense Air Pvt Ltd 
    - Fully responsive on desktop, tablet, and mobile with card fallbacks for tabular data.
 
 2. **Supabase Authentication & Corporate Domain Enforcement**
-   - Restricts registration and sign-in strictly to `@immenseair.com` (configurable via `VITE_ALLOWED_EMAIL_DOMAIN`).
+   - Restricts registration and sign-in strictly to `@immensesmartsolutions.com` (configurable via `VITE_ALLOWED_EMAIL_DOMAIN`).
    - **Dual-layer enforcement**: Validated on the frontend + Enforced server-side via PostgreSQL `BEFORE INSERT` trigger on `auth.users`. Non-corporate emails (e.g. `gmail.com`, `yahoo.com`) are rejected at the database level.
    - Zero exposure of service-role keys — uses only the public anon key.
 
@@ -69,9 +69,9 @@ Production-ready enterprise internal web portal built for **Immense Air Pvt Ltd 
 Create a `.env` file in the project root based on `.env.example`:
 
 ```env
-VITE_SUPABASE_URL=https://your-project.supabase.co
+VITE_SUPABASE_URL=https://ztrskyefkugevypzfecl.supabase.co
 VITE_SUPABASE_ANON_KEY=your-anon-publishable-key
-VITE_ALLOWED_EMAIL_DOMAIN=immenseair.com
+VITE_ALLOWED_EMAIL_DOMAIN=immensesmartsolutions.com
 ```
 
 > ⚠️ **SECURITY WARNING**: Never put your Supabase `service_role` key in frontend `.env` files.
@@ -91,12 +91,12 @@ npm run build
 
 ### 4. Create First Super Admin User
 
-1. Navigate to the portal login page and register with your `@immenseair.com` email.
+1. Navigate to the portal login page and register with your `support@immensesmartsolutions.com` email.
 2. In your Supabase SQL Editor, run:
    ```sql
    UPDATE public.profiles
    SET role = 'super_admin'
-   WHERE corporate_email = 'your-email@immenseair.com';
+   WHERE corporate_email = 'support@immensesmartsolutions.com';
    ```
 3. Refresh the portal — you now have full Super Admin privileges to manage staff, records, and vault documents.
 
