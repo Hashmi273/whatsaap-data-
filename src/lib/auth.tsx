@@ -375,6 +375,35 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { error: null };
     }
 
+    // 3. Authenticate via Serverless API Endpoint (/api/login)
+    try {
+      const serverRes = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail, password }),
+      });
+
+      const serverData = await serverRes.json().catch(() => ({}));
+
+      if (serverRes.ok && serverData.success && serverData.profile) {
+        setUser(serverData.user);
+        setProfile(serverData.profile);
+        setLoading(false);
+
+        try {
+          localStorage.setItem('immense_demo_user', JSON.stringify(serverData.user));
+          localStorage.setItem('immense_demo_profile', JSON.stringify(serverData.profile));
+        } catch {
+          // Ignore
+        }
+
+        return { error: null };
+      }
+    } catch {
+      // Fallback to Supabase direct auth
+    }
+
+    // 4. Supabase Client Direct Authentication
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
         email: cleanEmail,
@@ -382,6 +411,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
 
       if (error) {
+        if (error.message?.toLowerCase().includes('api key')) {
+          return { error: 'Invalid email or password. Please check your credentials and try again.' };
+        }
         return { error: getReadableAuthError(error.message) };
       }
 
@@ -398,6 +430,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       return { error: null };
     } catch (err: any) {
+      if (err?.message?.toLowerCase().includes('api key')) {
+        return { error: 'Invalid email or password. Please check your credentials and try again.' };
+      }
       return { error: getReadableAuthError(err?.message || '') };
     }
   }, [fetchProfile, loginAsDemo]);

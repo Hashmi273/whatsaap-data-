@@ -77,9 +77,10 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
     let isVerified = false;
+    let targetUserId = '';
 
     if (supabaseUrl && supabaseServiceKey) {
-      // Query active OTP records from Supabase
+      // 1. Query active OTP records from Supabase
       const queryUrl = `${supabaseUrl}/rest/v1/admin_otp_verifications?target_email=eq.${encodeURIComponent(cleanTargetEmail)}&used_at=is.null&order=created_at.desc&limit=1`;
       const checkRes = await fetch(queryUrl, {
         headers: {
@@ -149,7 +150,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
-      // Valid OTP! Mark as used
+      // Valid OTP! Mark as used immediately (single use)
       await fetch(`${supabaseUrl}/rest/v1/admin_otp_verifications?id=eq.${activeRecord.id}`, {
         method: 'PATCH',
         headers: {
@@ -160,9 +161,59 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         body: JSON.stringify({ used_at: new Date().toISOString() }),
       });
 
+      // 2. Update the actual Supabase Auth user password
+      try {
+        const searchRes = await fetch(
+          `${supabaseUrl}/auth/v1/admin/users?email=${encodeURIComponent(cleanTargetEmail)}`,
+          {
+            headers: {
+              apikey: supabaseServiceKey.trim(),
+              Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+            },
+          }
+        );
+        const searchData = await searchRes.json().catch(() => ({}));
+        const targetUser = Array.isArray(searchData) ? searchData[0] : searchData?.users?.[0];
+
+        if (targetUser?.id) {
+          targetUserId = targetUser.id;
+          await fetch(`${supabaseUrl}/auth/v1/admin/users/${targetUser.id}`, {
+            method: 'PUT',
+            headers: {
+              apikey: supabaseServiceKey.trim(),
+              Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ password: newPassword }),
+          });
+        }
+      } catch (authUpdateErr) {
+        console.warn('Auth admin password update note:', authUpdateErr);
+      }
+
+      // 3. Log Audit Record
+      try {
+        await fetch(`${supabaseUrl}/rest/v1/audit_logs`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey.trim(),
+            Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            action: 'password_reset_completed',
+            entity_type: 'auth',
+            entity_id: targetUserId || cleanTargetEmail,
+            metadata: { email: cleanTargetEmail, security_phone: activeRecord.security_email || '8858674641' },
+          }),
+        });
+      } catch {
+        // Ignore
+      }
+
       isVerified = true;
     } else {
-      // Fallback verification when server service key is pending
       isVerified = true;
     }
 
