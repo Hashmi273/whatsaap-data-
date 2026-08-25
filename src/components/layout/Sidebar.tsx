@@ -2,6 +2,7 @@ import { NavLink, useNavigate } from 'react-router-dom';
 import {
   LayoutDashboard,
   MessageSquare,
+  Radio,
   FolderLock,
   Search,
   Users,
@@ -41,6 +42,12 @@ export function Sidebar({ sidebarOpen, setSidebarOpen }: SidebarProps) {
       to: '/onboarding',
       label: 'WhatsApp Onboarding',
       icon: MessageSquare,
+      show: true,
+    },
+    {
+      to: '/rcs',
+      label: 'RCS Onboarding',
+      icon: Radio,
       show: true,
     },
     {

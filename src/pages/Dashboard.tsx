@@ -13,7 +13,8 @@ import {
   ShieldCheck,
   FileText,
   TrendingUp,
-  FolderLock
+  FolderLock,
+  Radio
 } from 'lucide-react';
 import {
   PieChart,
@@ -154,17 +155,26 @@ export function Dashboard() {
             {/* Quick Action Buttons */}
             <div className="flex flex-wrap items-center gap-2.5">
               {canManage && (
-                <button
-                  onClick={() => navigate('/onboarding/new')}
-                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-[#071A3D] font-bold text-xs rounded-xl shadow-sm hover:bg-blue-50 transition-colors"
-                >
-                  <PlusCircle className="w-4 h-4 text-[#1677FF]" />
-                  New Onboarding
-                </button>
+                <>
+                  <button
+                    onClick={() => navigate('/onboarding/new')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-[#071A3D] font-bold text-xs rounded-xl shadow-xs hover:bg-blue-50 transition-colors cursor-pointer"
+                  >
+                    <PlusCircle className="w-4 h-4 text-[#1677FF]" />
+                    WhatsApp
+                  </button>
+                  <button
+                    onClick={() => navigate('/rcs/new')}
+                    className="inline-flex items-center gap-2 px-4 py-2.5 bg-blue-500 hover:bg-blue-600 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer"
+                  >
+                    <Radio className="w-4 h-4 text-white" />
+                    New RCS Client
+                  </button>
+                </>
               )}
               <button
                 onClick={() => navigate('/documents/search')}
-                className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium text-xs rounded-xl border border-white/20 transition-colors backdrop-blur-xs"
+                className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium text-xs rounded-xl border border-white/20 transition-colors backdrop-blur-xs cursor-pointer"
               >
                 <Search className="w-4 h-4 text-blue-300" />
                 Find GST / Docs

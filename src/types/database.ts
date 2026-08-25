@@ -61,6 +61,29 @@ export interface OnboardingRecord {
   creator_profile?: Profile;
 }
 
+export interface RcsOnboardingRecord {
+  id: string;
+  brand_name: string;
+  company_name: string;
+  gst_number: string;
+  website: string;
+  contact_person: string;
+  contact_number: string;
+  contact_email: string;
+  rcs_business_name: string;
+  rcs_agent_id: string;
+  status: OnboardingStatus;
+  assigned_to: string | null;
+  onboarding_date: string;
+  notes: string;
+  created_by: string | null;
+  created_at: string;
+  updated_at: string;
+  // Joined fields (optional)
+  assigned_profile?: Profile;
+  creator_profile?: Profile;
+}
+
 export interface OnboardingDocument {
   id: string;
   onboarding_id: string;

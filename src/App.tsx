@@ -17,6 +17,9 @@ import { ActivityLogs } from '@/pages/ActivityLogs';
 import { Profile } from '@/pages/Profile';
 import { Settings } from '@/pages/Settings';
 import { ResetPassword } from '@/pages/ResetPassword';
+import { RcsList } from '@/pages/RcsList';
+import { RcsDetail } from '@/pages/RcsDetail';
+import { RcsForm } from '@/pages/RcsForm';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -45,6 +48,8 @@ export function App() {
                 <Route path="/dashboard" element={<Dashboard />} />
                 <Route path="/onboarding" element={<OnboardingList />} />
                 <Route path="/onboarding/:id" element={<OnboardingDetail />} />
+                <Route path="/rcs" element={<RcsList />} />
+                <Route path="/rcs/:id" element={<RcsDetail />} />
                 <Route path="/documents" element={<DocumentVault />} />
                 <Route path="/documents/search" element={<DocumentSearch />} />
                 <Route path="/profile" element={<Profile />} />
@@ -54,6 +59,8 @@ export function App() {
               <Route element={<ProtectedRoute allowedRoles={['super_admin', 'manager']} />}>
                 <Route path="/onboarding/new" element={<OnboardingForm />} />
                 <Route path="/onboarding/:id/edit" element={<OnboardingForm />} />
+                <Route path="/rcs/new" element={<RcsForm />} />
+                <Route path="/rcs/:id/edit" element={<RcsForm />} />
                 <Route path="/activity" element={<ActivityLogs />} />
               </Route>
 
