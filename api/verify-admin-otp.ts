@@ -186,6 +186,26 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
             },
             body: JSON.stringify({ password: newPassword }),
           });
+        } else {
+          // If user does not exist in Supabase Auth yet, create the user
+          const createRes = await fetch(`${supabaseUrl}/auth/v1/admin/users`, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey.trim(),
+              Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              email: cleanTargetEmail,
+              password: newPassword,
+              email_confirm: true,
+              user_metadata: { full_name: cleanTargetEmail.split('@')[0] },
+            }),
+          });
+          const createData = await createRes.json().catch(() => ({}));
+          if (createData?.id) {
+            targetUserId = createData.id;
+          }
         }
       } catch (authUpdateErr) {
         console.warn('Auth admin password update note:', authUpdateErr);

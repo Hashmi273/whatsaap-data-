@@ -301,81 +301,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    // 1. Check custom updated user passwords store
-    try {
-      const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
-      if (userPasswords[cleanEmail]) {
-        if (userPasswords[cleanEmail] === password) {
-          // Identify role from custom profiles or demo users
-          let userRole: UserRole = 'employee';
-          let userProfile: Profile | null = null;
-
-          const localProfiles = JSON.parse(localStorage.getItem('immense_custom_profiles') || '[]');
-          const found = localProfiles.find((p: any) => p.corporate_email.toLowerCase() === cleanEmail);
-          if (found) {
-            userRole = found.role;
-            userProfile = found;
-          } else {
-            const demoKey = Object.keys(DEMO_USERS).find(
-              (k) => DEMO_USERS[k as UserRole].email.toLowerCase() === cleanEmail
-            ) as UserRole | undefined;
-            if (demoKey) {
-              userRole = demoKey;
-              userProfile = DEMO_USERS[demoKey].profile;
-            }
-          }
-
-          if (userProfile && !userProfile.is_active) {
-            return {
-              error: 'Your account has been deactivated. Please contact your administrator.',
-            };
-          }
-
-          if (userProfile) {
-            const updatedProfile = { ...userProfile, last_login: new Date().toISOString() };
-            setUser({
-              id: updatedProfile.id,
-              app_metadata: {},
-              user_metadata: { full_name: updatedProfile.full_name },
-              aud: 'authenticated',
-              created_at: updatedProfile.created_at,
-              email: cleanEmail,
-            } as any);
-            setProfile(updatedProfile);
-            setLoading(false);
-            try {
-              localStorage.setItem('immense_demo_user', JSON.stringify({ id: updatedProfile.id, email: cleanEmail }));
-              localStorage.setItem('immense_demo_profile', JSON.stringify(updatedProfile));
-            } catch {
-              // Ignore
-            }
-            await logAudit('login', 'auth', updatedProfile.id, { email: cleanEmail });
-            return { error: null };
-          }
-        } else {
-          return {
-            error: 'Invalid email or password. Please check your credentials and try again.',
-          };
-        }
-      }
-    } catch {
-      // Ignore
-    }
-
-    // 2. Default credentials for demo accounts (when not overridden by password reset)
-    const demoKey = Object.keys(DEMO_USERS).find(
-      (k) => DEMO_USERS[k as UserRole].email.toLowerCase() === cleanEmail
-    ) as UserRole | undefined;
-
-    if (
-      demoKey &&
-      (password === 'Admin@Immense2026!' || password === 'password123' || password === 'immense123')
-    ) {
-      loginAsDemo(demoKey);
-      return { error: null };
-    }
-
-    // 3. Authenticate via Serverless API Endpoint (/api/login)
+    // 1. Primary Authenticate via Serverless API Endpoint (/api/login)
     try {
       const serverRes = await fetch('/api/login', {
         method: 'POST',
@@ -393,49 +319,73 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         try {
           localStorage.setItem('immense_demo_user', JSON.stringify(serverData.user));
           localStorage.setItem('immense_demo_profile', JSON.stringify(serverData.profile));
+          // Store password locally for seamless offline/fast retrieval
+          const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
+          userPasswords[cleanEmail] = password;
+          localStorage.setItem('immense_user_passwords', JSON.stringify(userPasswords));
         } catch {
           // Ignore
         }
 
         return { error: null };
+      } else if (serverData.error) {
+        return { error: serverData.error };
       }
     } catch {
-      // Fallback to Supabase direct auth
+      // Fallback for offline dev
     }
 
-    // 4. Supabase Client Direct Authentication
+    // 2. Fallback to custom updated user passwords store
     try {
-      const { data, error } = await supabase.auth.signInWithPassword({
-        email: cleanEmail,
-        password,
-      });
+      const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
+      if (userPasswords[cleanEmail]) {
+        if (userPasswords[cleanEmail] === password) {
+          const mapping = DEMO_USERS.employee;
+          const userProfile = {
+            id: `immense-employee-${cleanEmail.replace(/[^a-z0-9]/g, '')}`,
+            full_name: cleanEmail.split('@')[0],
+            corporate_email: cleanEmail,
+            role: (cleanEmail.includes('manager') ? 'manager' : cleanEmail.includes('support') ? 'super_admin' : cleanEmail.includes('compliance') ? 'viewer' : 'employee') as UserRole,
+            department: 'Corporate Operations',
+            is_active: true,
+            avatar_url: null,
+            last_login: new Date().toISOString(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
 
-      if (error) {
-        if (error.message?.toLowerCase().includes('api key')) {
+          setUser({
+            id: userProfile.id,
+            email: cleanEmail,
+            user_metadata: { full_name: userProfile.full_name, role: userProfile.role },
+            aud: 'authenticated',
+          } as any);
+          setProfile(userProfile);
+          setLoading(false);
+          return { error: null };
+        } else {
           return { error: 'Invalid email or password. Please check your credentials and try again.' };
         }
-        return { error: getReadableAuthError(error.message) };
       }
-
-      if (data.user) {
-        const p = await fetchProfile(data.user.id);
-        if (p && !p.is_active) {
-          await supabase.auth.signOut();
-          return {
-            error: 'Your account has been deactivated. Please contact your administrator.',
-          };
-        }
-        await logAudit('login', 'auth', data.user.id);
-      }
-
-      return { error: null };
-    } catch (err: any) {
-      if (err?.message?.toLowerCase().includes('api key')) {
-        return { error: 'Invalid email or password. Please check your credentials and try again.' };
-      }
-      return { error: getReadableAuthError(err?.message || '') };
+    } catch {
+      // Ignore
     }
-  }, [fetchProfile, loginAsDemo]);
+
+    // 3. Default demo fallback
+    const demoKey = Object.keys(DEMO_USERS).find(
+      (k) => DEMO_USERS[k as UserRole].email.toLowerCase() === cleanEmail
+    ) as UserRole | undefined;
+
+    if (
+      demoKey &&
+      (password === 'Admin@Immense2026!' || password === 'password123' || password === 'immense123')
+    ) {
+      loginAsDemo(demoKey);
+      return { error: null };
+    }
+
+    return { error: 'Invalid email or password. Please check your credentials and try again.' };
+  }, [loginAsDemo]);
 
   const signUp = useCallback(async (email: string, password: string, fullName: string) => {
     if (!isValidCorporateEmail(email)) {
