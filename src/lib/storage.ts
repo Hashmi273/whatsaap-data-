@@ -39,9 +39,16 @@ export async function uploadDocumentToStorage(
     reader.readAsDataURL(file);
     const fileBase64 = await base64Promise;
 
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData?.session?.access_token;
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
     const res = await fetch('/api/upload-document', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({
         path: cleanPath,
         bucket,
@@ -52,6 +59,9 @@ export async function uploadDocumentToStorage(
 
     if (res.ok) {
       return true;
+    } else {
+      const errJson = await res.json().catch(() => ({}));
+      console.error('Serverless upload returned error:', errJson);
     }
   } catch (serverErr) {
     console.error('Serverless storage upload fallback error:', serverErr);
