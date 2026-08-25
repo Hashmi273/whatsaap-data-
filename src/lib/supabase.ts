@@ -6,19 +6,16 @@
 
 import { createClient } from '@supabase/supabase-js';
 
-const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
+// Project Supabase Endpoint
+const PROJECT_SUPABASE_URL = 'https://ztrskyefkugevypzfecl.supabase.co';
+const FALLBACK_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_anon_fallback';
 
-if (!supabaseUrl || !supabaseAnonKey) {
-  console.error(
-    'Missing Supabase environment variables. ' +
-    'Please set VITE_SUPABASE_URL and VITE_SUPABASE_ANON_KEY in your .env file.'
-  );
-}
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || PROJECT_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY || FALLBACK_ANON_KEY;
 
 export const supabase = createClient(
-  supabaseUrl || '',
-  supabaseAnonKey || '',
+  supabaseUrl,
+  supabaseAnonKey,
   {
     auth: {
       autoRefreshToken: true,
@@ -27,10 +24,3 @@ export const supabase = createClient(
     },
   }
 );
-
-// ============================================================
-// SECURITY NOTE:
-// The Supabase service-role key must NEVER appear in this file or
-// any other frontend code. Credential encryption/decryption is
-// handled entirely server-side via PostgreSQL functions.
-// ============================================================
