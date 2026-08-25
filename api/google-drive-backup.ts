@@ -1,5 +1,227 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-import { resolveGoogleDriveToken, getSupabaseCredentials } from './_lib/google-drive-auth';
+
+// Helper: Get Supabase Credentials
+function getSupabaseCredentials() {
+  const supabaseUrl = (
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    'https://ztrskyefkugevypzfecl.supabase.co'
+  ).replace(/\/+$/, '');
+
+  const supabaseServiceKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_KEY ||
+    ''
+  ).trim();
+
+  return { supabaseUrl, supabaseServiceKey };
+}
+
+// Helper: Resolve Google Drive OAuth Token reliably
+async function resolveGoogleDriveToken(): Promise<{
+  token: string | null;
+  email: string;
+  error?: string;
+  code?: string;
+  diagnostics: {
+    appConfigLoaded: boolean;
+    hasAccessToken: boolean;
+    hasRefreshToken: boolean;
+    hasEmail: boolean;
+    tokenExpiry: string;
+    accessTokenValidationStatus: number | string;
+    refreshAttempted: boolean;
+    refreshResponseStatus: number | string;
+    finalAuthenticationStatus: 'success' | 'failure';
+  };
+}> {
+  const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
+
+  const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+  const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+  let refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
+  let accessToken = '';
+  let tokenExpiryIso = '';
+  let userEmail = (process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com').trim();
+  let appConfigLoaded = false;
+
+  const diagnostics = {
+    appConfigLoaded: false,
+    hasAccessToken: false,
+    hasRefreshToken: false,
+    hasEmail: false,
+    tokenExpiry: 'none',
+    accessTokenValidationStatus: 'none' as number | string,
+    refreshAttempted: false,
+    refreshResponseStatus: 'none' as number | string,
+    finalAuthenticationStatus: 'failure' as 'success' | 'failure',
+  };
+
+  // 1. Read app_config from PostgreSQL
+  if (supabaseUrl && supabaseServiceKey) {
+    try {
+      const configRes = await fetch(`${supabaseUrl}/rest/v1/app_config?select=key,value`, {
+        headers: {
+          apikey: supabaseServiceKey,
+          Authorization: `Bearer ${supabaseServiceKey}`,
+        },
+      });
+
+      if (configRes.ok) {
+        appConfigLoaded = true;
+        const configRows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
+        const tokenRow = configRows.find((r) => r.key === 'google_drive_refresh_token');
+        const accessRow = configRows.find((r) => r.key === 'google_drive_access_token');
+        const emailRow = configRows.find((r) => r.key === 'google_drive_email');
+        const expiryRow = configRows.find((r) => r.key === 'google_drive_token_expires_at');
+
+        if (tokenRow?.value) refreshToken = tokenRow.value.trim();
+        if (accessRow?.value) accessToken = accessRow.value.trim();
+        if (emailRow?.value) userEmail = emailRow.value.trim();
+        if (expiryRow?.value) tokenExpiryIso = expiryRow.value.trim();
+      }
+    } catch {
+      appConfigLoaded = false;
+    }
+  }
+
+  diagnostics.appConfigLoaded = appConfigLoaded;
+  diagnostics.hasAccessToken = Boolean(accessToken);
+  diagnostics.hasRefreshToken = Boolean(refreshToken);
+  diagnostics.hasEmail = Boolean(userEmail);
+  diagnostics.tokenExpiry = tokenExpiryIso || 'none';
+
+  // 2. If access token exists, probe Google Drive API
+  if (accessToken) {
+    try {
+      const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota,user', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      diagnostics.accessTokenValidationStatus = aboutRes.status;
+
+      if (aboutRes.ok) {
+        const aboutData: any = (await aboutRes.json().catch(() => ({}))) as any;
+        if (aboutData.user?.emailAddress) {
+          userEmail = aboutData.user.emailAddress;
+        }
+        diagnostics.finalAuthenticationStatus = 'success';
+        return { token: accessToken, email: userEmail, diagnostics };
+      }
+
+      if (aboutRes.status === 403) {
+        diagnostics.finalAuthenticationStatus = 'failure';
+        return {
+          token: null,
+          email: userEmail,
+          error: 'Google Drive permission denied (HTTP 403). Verify OAuth scopes in Google Cloud Console.',
+          code: 'DRIVE_PERMISSION_DENIED',
+          diagnostics,
+        };
+      } else if (aboutRes.status === 429) {
+        diagnostics.finalAuthenticationStatus = 'failure';
+        return {
+          token: null,
+          email: userEmail,
+          error: 'Google Drive rate limit exceeded (HTTP 429). Please retry in a few moments.',
+          code: 'DRIVE_RATE_LIMIT',
+          diagnostics,
+        };
+      } else if (aboutRes.status >= 500) {
+        diagnostics.finalAuthenticationStatus = 'failure';
+        return {
+          token: null,
+          email: userEmail,
+          error: `Google Drive API temporarily unavailable (HTTP ${aboutRes.status}).`,
+          code: 'DRIVE_API_UNAVAILABLE',
+          diagnostics,
+        };
+      }
+    } catch (testErr: any) {
+      diagnostics.accessTokenValidationStatus = testErr.message || 'network_error';
+    }
+  }
+
+  // 3. If access token is missing or returned 401, exchange refresh token
+  if (clientId && clientSecret && refreshToken) {
+    diagnostics.refreshAttempted = true;
+    try {
+      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams({
+          client_id: clientId,
+          client_secret: clientSecret,
+          refresh_token: refreshToken,
+          grant_type: 'refresh_token',
+        }),
+      });
+
+      diagnostics.refreshResponseStatus = tokenRes.status;
+      const tokenData: any = (await tokenRes.json().catch(() => ({}))) as any;
+
+      if (tokenRes.ok && tokenData.access_token) {
+        const freshToken = tokenData.access_token;
+        const expiresIn = Number(tokenData.expires_in || 3600);
+        const newExpiryIso = new Date(Date.now() + expiresIn * 1000).toISOString();
+
+        // Persist fresh access token to app_config
+        if (supabaseUrl && supabaseServiceKey) {
+          fetch(`${supabaseUrl}/rest/v1/app_config?on_conflict=key`, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates',
+            },
+            body: JSON.stringify([
+              { key: 'google_drive_access_token', value: freshToken },
+              { key: 'google_drive_token_expires_at', value: newExpiryIso },
+            ]),
+          }).catch(() => {});
+        }
+
+        diagnostics.finalAuthenticationStatus = 'success';
+        return { token: freshToken, email: userEmail, diagnostics };
+      }
+
+      diagnostics.finalAuthenticationStatus = 'failure';
+      const errMsg = tokenData.error_description || tokenData.error || 'Failed to exchange refresh token with Google.';
+      return {
+        token: null,
+        email: userEmail,
+        error: errMsg,
+        code: 'OAUTH_REFRESH_FAILED',
+        diagnostics,
+      };
+    } catch (refreshErr: any) {
+      diagnostics.finalAuthenticationStatus = 'failure';
+      return {
+        token: null,
+        email: userEmail,
+        error: refreshErr.message || 'Token refresh network request failed.',
+        code: 'OAUTH_NETWORK_ERROR',
+        diagnostics,
+      };
+    }
+  }
+
+  diagnostics.finalAuthenticationStatus = 'failure';
+  return {
+    token: null,
+    email: userEmail,
+    error: 'Google Drive is not connected. Please click "Connect Google Drive" in Settings to authenticate.',
+    code: 'NOT_CONNECTED',
+    diagnostics,
+  };
+}
 
 // Find or create a folder in Google Drive (My Drive)
 async function findOrCreateFolder(
@@ -47,7 +269,7 @@ async function findOrCreateFolder(
     body: JSON.stringify(createBody),
   });
 
-  const createData: any = (await createRes.json()) as any;
+  const createData: any = (await createRes.json().catch(() => ({}))) as any;
   if (!createRes.ok || !createData?.id) {
     throw new Error(`Google Drive folder creation failed for "${folderName}": ${createData?.error?.message || createRes.statusText}`);
   }
@@ -102,7 +324,7 @@ async function uploadFileToDrive(
     }
   );
 
-  const uploadData: any = (await uploadRes.json()) as any;
+  const uploadData: any = (await uploadRes.json().catch(() => ({}))) as any;
   if (!uploadRes.ok || !uploadData?.id) {
     throw new Error(`Drive file upload failed for "${fileName}": ${uploadData?.error?.message || uploadRes.statusText}`);
   }
@@ -115,7 +337,7 @@ async function uploadFileToDrive(
     }
   );
 
-  const verifyData: any = (await verifyRes.json()) as any;
+  const verifyData: any = (await verifyRes.json().catch(() => ({}))) as any;
   if (!verifyRes.ok || !verifyData?.id) {
     throw new Error(`Drive post-upload verification failed for "${fileName}": ${verifyData?.error?.message || verifyRes.statusText}`);
   }
@@ -151,7 +373,11 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           req.on('end', () => resolve(data));
           req.on('error', reject);
         });
-        body = JSON.parse(rawBody || '{}');
+        try {
+          body = JSON.parse(rawBody || '{}');
+        } catch {
+          body = {};
+        }
       }
     } else {
       const urlObj = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
@@ -161,22 +387,20 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     }
 
     const { recordId } = body;
-
     const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
 
-    // 1. Authenticate with Google Drive OAuth via shared resolver
-    const { token: accessToken, email: connectedEmail, error: authError, diagnostics } = await resolveGoogleDriveToken();
+    // Stage 1: Authenticate with Google Drive OAuth
+    const { token: accessToken, email: connectedEmail, error: authError, code: authCode, diagnostics } = await resolveGoogleDriveToken();
 
     console.log(`[GDRIVE-BACKUP]
-app_config loaded=${diagnostics.appConfigLoaded}
+requestStarted=true
+authResolution=${diagnostics.finalAuthenticationStatus}
 hasAccessToken=${diagnostics.hasAccessToken}
 hasRefreshToken=${diagnostics.hasRefreshToken}
-hasEmail=${diagnostics.hasEmail}
 tokenExpiry=${diagnostics.tokenExpiry}
 accessTokenValidationStatus=${diagnostics.accessTokenValidationStatus}
 refreshAttempted=${diagnostics.refreshAttempted}
-refreshResponseStatus=${diagnostics.refreshResponseStatus}
-finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
+refreshResponseStatus=${diagnostics.refreshResponseStatus}`);
 
     if (!accessToken || diagnostics.finalAuthenticationStatus !== 'success') {
       res.statusCode = 400;
@@ -185,6 +409,7 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
         JSON.stringify({
           success: false,
           error: authError || 'Google Drive is not connected. Please click "Connect Google Drive" in Settings first.',
+          code: authCode || 'AUTHENTICATION_FAILED',
           diagnostics: {
             appConfigLoaded: diagnostics.appConfigLoaded,
             hasAccessToken: diagnostics.hasAccessToken,
@@ -198,24 +423,37 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
       return;
     }
 
-    // 2. Fetch Companies / Records to back up from Supabase
+    // Stage 2: Fetch Records from Supabase
     let recordsToProcess: any[] = [];
-    if (recordId && recordId !== 'all') {
-      const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?id=eq.${recordId}&select=id,brand_name,company_name,platform`, {
-        headers: {
-          apikey: supabaseServiceKey,
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-      });
-      recordsToProcess = (await recRes.json().catch(() => [])) as any[];
-    } else {
-      const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?select=id,brand_name,company_name,platform`, {
-        headers: {
-          apikey: supabaseServiceKey,
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-      });
-      recordsToProcess = (await recRes.json().catch(() => [])) as any[];
+    try {
+      if (recordId && recordId !== 'all') {
+        const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?id=eq.${recordId}&select=id,brand_name,company_name,platform`, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+        recordsToProcess = (await recRes.json().catch(() => [])) as any[];
+      } else {
+        const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?select=id,brand_name,company_name,platform`, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+        recordsToProcess = (await recRes.json().catch(() => [])) as any[];
+      }
+    } catch (recErr: any) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: `Failed to query onboarding records from database: ${recErr.message}`,
+          code: 'DOCUMENT_QUERY_FAILED',
+        })
+      );
+      return;
     }
 
     if (!recordsToProcess || recordsToProcess.length === 0) {
@@ -233,9 +471,24 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
       return;
     }
 
-    // 3. Build Google Drive Root Hierarchy: My Drive / IMMENSE Portal / All Companies Archive /
-    const rootFolder = await findOrCreateFolder(accessToken, 'IMMENSE Portal');
-    const archiveFolder = await findOrCreateFolder(accessToken, 'All Companies Archive', rootFolder.id);
+    // Stage 3: Build Root Google Drive Folders
+    let rootFolder;
+    let archiveFolder;
+    try {
+      rootFolder = await findOrCreateFolder(accessToken, 'IMMENSE Portal');
+      archiveFolder = await findOrCreateFolder(accessToken, 'All Companies Archive', rootFolder.id);
+    } catch (folderErr: any) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: `Google Drive root folder creation failed: ${folderErr.message}`,
+          code: 'DRIVE_FOLDER_CREATE_FAILED',
+        })
+      );
+      return;
+    }
 
     const verifiedFiles: Array<{
       fileId: string;
@@ -245,19 +498,31 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
       category: string;
       driveUrl: string;
     }> = [];
-    const failedFiles: Array<{ fileName: string; company: string; error: string }> = [];
+    const failedFiles: Array<{ fileName: string; company: string; error: string; code?: string }> = [];
+    let totalDocsCount = 0;
 
-    // 4. Process each company record
+    // Stage 4: Process Company Folders and Upload Documents
     for (const rec of recordsToProcess) {
       const companyDisplayName = (rec.company_name || rec.brand_name || 'Unnamed Company').trim();
-      const companyFolder = await findOrCreateFolder(accessToken, companyDisplayName, archiveFolder.id);
+      let companyFolder;
+      let gstFolder, panFolder, logoFolder, bannerFolder, otherFolder;
 
-      // Create Category Subfolders
-      const gstFolder = await findOrCreateFolder(accessToken, 'GST', companyFolder.id);
-      const panFolder = await findOrCreateFolder(accessToken, 'PAN', companyFolder.id);
-      const logoFolder = await findOrCreateFolder(accessToken, 'Logo', companyFolder.id);
-      const bannerFolder = await findOrCreateFolder(accessToken, 'Banner', companyFolder.id);
-      const otherFolder = await findOrCreateFolder(accessToken, 'Other Documents', companyFolder.id);
+      try {
+        companyFolder = await findOrCreateFolder(accessToken, companyDisplayName, archiveFolder.id);
+        gstFolder = await findOrCreateFolder(accessToken, 'GST', companyFolder.id);
+        panFolder = await findOrCreateFolder(accessToken, 'PAN', companyFolder.id);
+        logoFolder = await findOrCreateFolder(accessToken, 'Logo', companyFolder.id);
+        bannerFolder = await findOrCreateFolder(accessToken, 'Banner', companyFolder.id);
+        otherFolder = await findOrCreateFolder(accessToken, 'Other Documents', companyFolder.id);
+      } catch (catErr: any) {
+        failedFiles.push({
+          fileName: 'Directory Hierarchy',
+          company: companyDisplayName,
+          error: catErr.message,
+          code: 'DRIVE_FOLDER_CREATE_FAILED',
+        });
+        continue;
+      }
 
       const subFolderMap: Record<string, { id: string; name: string }> = {
         gst: gstFolder,
@@ -268,14 +533,26 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
       };
 
       // Fetch documents for this company
-      const docsRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_documents?onboarding_id=eq.${rec.id}&select=id,file_name,original_name,category,storage_path,mime_type,file_size`, {
-        headers: {
-          apikey: supabaseServiceKey,
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-      });
+      let docs: any[] = [];
+      try {
+        const docsRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_documents?onboarding_id=eq.${rec.id}&select=id,file_name,original_name,category,storage_path,mime_type,file_size`, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+        docs = (await docsRes.json().catch(() => [])) as any[];
+      } catch (docErr: any) {
+        failedFiles.push({
+          fileName: 'All Documents',
+          company: companyDisplayName,
+          error: docErr.message,
+          code: 'DOCUMENT_QUERY_FAILED',
+        });
+        continue;
+      }
 
-      const docs: any[] = (await docsRes.json().catch(() => [])) as any[];
+      totalDocsCount += docs.length;
 
       for (const doc of docs) {
         const catKey = (doc.category || '').toLowerCase();
@@ -313,7 +590,7 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
 
           // Download physical binary from Supabase Storage private bucket
           if (!doc.storage_path) {
-            failedFiles.push({ fileName: originalName, company: companyDisplayName, error: 'Document missing storage_path in database.' });
+            failedFiles.push({ fileName: originalName, company: companyDisplayName, error: 'Document missing storage_path in database.', code: 'STORAGE_PATH_MISSING' });
             continue;
           }
 
@@ -328,20 +605,18 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
           );
 
           if (!storageRes.ok) {
-            failedFiles.push({ fileName: originalName, company: companyDisplayName, error: `Supabase Storage read failed (HTTP ${storageRes.status})` });
+            failedFiles.push({ fileName: originalName, company: companyDisplayName, error: `Supabase Storage read returned HTTP ${storageRes.status}`, code: 'STORAGE_DOWNLOAD_FAILED' });
             continue;
           }
 
           const fileBuffer = Buffer.from(await storageRes.arrayBuffer());
           if (fileBuffer.length === 0) {
-            failedFiles.push({ fileName: originalName, company: companyDisplayName, error: 'Downloaded file binary is empty (0 bytes).' });
+            failedFiles.push({ fileName: originalName, company: companyDisplayName, error: 'Downloaded file binary is empty (0 bytes).', code: 'STORAGE_EMPTY_FILE' });
             continue;
           }
 
           // Upload authentic binary directly to Google Drive and verify
           const uploadedFile = await uploadFileToDrive(accessToken, originalName, mimeType, fileBuffer, targetFolder.id);
-
-          console.log(`[GDRIVE-BACKUP] Verified upload: ${uploadedFile.name} (ID: ${uploadedFile.id}, Size: ${uploadedFile.size} bytes) in ${companyDisplayName}/${targetFolder.name}`);
 
           verifiedFiles.push({
             fileId: uploadedFile.id,
@@ -352,11 +627,21 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
             driveUrl: uploadedFile.url,
           });
         } catch (fileErr: any) {
-          console.error(`[GDRIVE-BACKUP] Error backing up ${originalName}:`, fileErr.message);
-          failedFiles.push({ fileName: originalName, company: companyDisplayName, error: fileErr.message });
+          failedFiles.push({ fileName: originalName, company: companyDisplayName, error: fileErr.message, code: 'DRIVE_UPLOAD_FAILED' });
         }
       }
     }
+
+    console.log(`[GDRIVE-BACKUP]
+requestStarted=true
+authResolution=success
+documentResolution=success
+documentCount=${totalDocsCount}
+folderCreation=success
+uploadStarted=true
+uploadedCount=${verifiedFiles.length}
+verifiedCount=${verifiedFiles.length}
+finalStatus=${failedFiles.length === 0 || verifiedFiles.length > 0 ? 'success' : 'failure'}`);
 
     const nowIso = new Date().toISOString();
     const finalAccount = connectedEmail || process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com';
@@ -385,8 +670,8 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
             },
           }),
         });
-      } catch (dbErr: any) {
-        console.warn('Audit log write error:', dbErr.message);
+      } catch {
+        // Continue
       }
     }
 
@@ -415,7 +700,8 @@ finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
     res.end(
       JSON.stringify({
         success: false,
-        error: err.message || 'Failed to complete Google Drive secondary backup.',
+        error: err.message || 'An internal error occurred during Google Drive backup.',
+        code: 'BACKUP_INTERNAL_ERROR',
       })
     );
   }

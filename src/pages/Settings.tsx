@@ -116,7 +116,19 @@ export function Settings() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ recordId: 'all' }),
       });
-      const data: any = (await res.json()) as any;
+
+      const rawText = await res.text();
+      let data: any;
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        data = {
+          success: false,
+          error: `Server error (HTTP ${res.status}): ${rawText.slice(0, 300)}`,
+          code: 'NON_JSON_RESPONSE',
+        };
+      }
+
       if (res.ok && data.success) {
         if (data.backedUpCount > 0) {
           toast.success(
