@@ -5,7 +5,7 @@
 
 export type UserRole = 'super_admin' | 'manager' | 'employee' | 'viewer';
 
-export type OnboardingStatus = 'pending' | 'in_progress' | 'live' | 'rejected' | 'completed' | 'inactive';
+export type OnboardingStatus = 'draft' | 'submitted' | 'pending' | 'in_progress' | 'live' | 'rejected' | 'completed' | 'inactive';
 
 export type DocumentCategory =
   | 'logo'
@@ -140,6 +140,8 @@ export interface SelectOption {
 }
 
 export const STATUS_OPTIONS: SelectOption[] = [
+  { value: 'draft', label: 'Draft' },
+  { value: 'submitted', label: 'Submitted' },
   { value: 'pending', label: 'Pending' },
   { value: 'in_progress', label: 'In Progress' },
   { value: 'live', label: 'Live' },
@@ -171,6 +173,8 @@ export const ROLE_OPTIONS: SelectOption[] = [
 ];
 
 export const STATUS_COLORS: Record<OnboardingStatus, { bg: string; text: string; dot: string }> = {
+  draft: { bg: 'bg-slate-100', text: 'text-slate-700', dot: 'bg-slate-400' },
+  submitted: { bg: 'bg-indigo-50', text: 'text-indigo-700', dot: 'bg-indigo-500' },
   pending: { bg: 'bg-amber-50', text: 'text-amber-700', dot: 'bg-amber-500' },
   in_progress: { bg: 'bg-blue-50', text: 'text-blue-700', dot: 'bg-blue-500' },
   live: { bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },

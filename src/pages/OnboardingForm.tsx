@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useForm, type FieldErrors } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
@@ -17,16 +17,21 @@ import {
   Calendar,
   Save,
   CheckCircle2,
-  AlertCircle
+  AlertCircle,
+  UploadCloud,
+  FolderLock,
+  Send
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { PageLayout } from '@/components/layout/PageLayout';
+import { SubmissionSuccessModal } from '@/components/shared/SubmissionSuccessModal';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { isValidUuid } from '@/lib/constants';
-import { STATUS_OPTIONS } from '@/types/database';
-import type { OnboardingRecord, Profile } from '@/types/database';
+import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
+import type { OnboardingRecord, Profile, DocumentCategory } from '@/types/database';
+import { format } from 'date-fns';
 
 const onboardingSchema = z.object({
   brand_name: z.string().min(1, 'Brand Name is required'),
@@ -39,7 +44,7 @@ const onboardingSchema = z.object({
   password: z.string().optional(),
   platform: z.string().optional(),
   login_url: z.string().optional(),
-  status: z.enum(['pending', 'in_progress', 'live', 'rejected', 'completed', 'inactive']),
+  status: z.enum(['draft', 'submitted', 'pending', 'in_progress', 'live', 'rejected', 'completed', 'inactive']),
   assigned_to: z.string().optional(),
   onboarding_date: z.string().optional(),
   notes: z.string().optional(),
@@ -54,6 +59,22 @@ export function OnboardingForm() {
   const navigate = useNavigate();
   const toast = useToast();
   const queryClient = useQueryClient();
+
+  // Document Uploads during onboarding submission
+  const [gstFile, setGstFile] = useState<File | null>(null);
+  const [panFile, setPanFile] = useState<File | null>(null);
+  const [logoFile, setLogoFile] = useState<File | null>(null);
+
+  // Success Modal State
+  const [successModalData, setSuccessModalData] = useState<{
+    open: boolean;
+    brandName: string;
+    recordId: string;
+    submittedAt: string;
+    status: any;
+  } | null>(null);
+
+  const [formGlobalError, setFormGlobalError] = useState<string | null>(null);
 
   const {
     register,
@@ -73,7 +94,7 @@ export function OnboardingForm() {
       password: '',
       platform: 'Meta Business Manager',
       login_url: 'https://business.facebook.com',
-      status: 'pending',
+      status: 'submitted',
       assigned_to: '',
       onboarding_date: new Date().toISOString().split('T')[0],
       notes: '',
@@ -102,7 +123,7 @@ export function OnboardingForm() {
     },
   });
 
-  // If editing, fetch existing record
+  // Pre-populate when editing
   const { data: existingRecord, isLoading: recordLoading } = useQuery({
     queryKey: ['onboarding-detail', id],
     queryFn: async () => {
@@ -115,15 +136,17 @@ export function OnboardingForm() {
           .single();
         if (!error && data) return data as OnboardingRecord;
       } catch {
-        // Check local
+        // Ignore
       }
+
       try {
-        const localCustom = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
-        const match = localCustom.find((r: any) => r.id === id);
+        const local = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
+        const match = local.find((r: any) => r.id === id);
         if (match) return match as OnboardingRecord;
       } catch {
         // Ignore
       }
+
       return null;
     },
     enabled: isEditing,
@@ -139,7 +162,7 @@ export function OnboardingForm() {
         contact_email: existingRecord.contact_email || '',
         contact_number: existingRecord.contact_number || '',
         username: existingRecord.username || '',
-        password: '', // Kept empty unless user enters new password
+        password: existingRecord.credential_encrypted || '',
         platform: existingRecord.platform || 'Meta Business Manager',
         login_url: existingRecord.login_url || 'https://business.facebook.com',
         status: existingRecord.status || 'pending',
@@ -150,9 +173,78 @@ export function OnboardingForm() {
     }
   }, [existingRecord, reset]);
 
+  // Helper to upload and link a document to a record
+  const uploadDoc = async (file: File, category: DocumentCategory, recordId: string) => {
+    try {
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
+      const storagePath = `${recordId}/${category}/${uniqueFileName}`;
+      const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
+
+      try {
+        await supabase.storage.from('onboarding-documents').upload(storagePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+      } catch (e) {
+        console.warn('Storage upload note:', e);
+      }
+
+      const docPayload: any = {
+        onboarding_id: recordId,
+        file_name: file.name,
+        original_name: file.name,
+        category,
+        storage_path: storagePath,
+        mime_type: file.type || 'application/octet-stream',
+        file_size: file.size,
+      };
+
+      if (uploaderId) {
+        docPayload.uploaded_by = uploaderId;
+      }
+
+      try {
+        await supabase.from('onboarding_documents').insert(docPayload);
+      } catch (e) {
+        console.warn('DB doc insert note:', e);
+      }
+
+      let blobUrl = '';
+      try {
+        blobUrl = URL.createObjectURL(file);
+      } catch {
+        // Ignore
+      }
+
+      const newDocItem: any = {
+        id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        ...docPayload,
+        created_at: new Date().toISOString(),
+        localPreviewUrl: blobUrl,
+        uploader_profile: {
+          id: profile?.id || 'immense-admin-001',
+          full_name: profile?.full_name || 'Immense Super Admin',
+          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
+        },
+      };
+
+      const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${recordId}`) || '[]');
+      localDocs.unshift(newDocItem);
+      localStorage.setItem(`immense_docs_${recordId}`, JSON.stringify(localDocs));
+
+      const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
+      globalDocs.unshift(newDocItem);
+      localStorage.setItem('immense_all_vault_docs', JSON.stringify(globalDocs));
+    } catch (err) {
+      console.warn('Doc upload helper error:', err);
+    }
+  };
+
   const onSubmit = async (data: OnboardingFormData) => {
-    const assignedTo = isValidUuid(data.assigned_to) ? data.assigned_to : null;
-    const createdBy = isValidUuid(profile?.id) ? profile?.id : null;
+    setFormGlobalError(null);
+    const assignedTo = data.assigned_to && isValidUuid(data.assigned_to) ? data.assigned_to : null;
+    const createdBy = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
     try {
       if (isEditing && id) {
@@ -176,30 +268,31 @@ export function OnboardingForm() {
           updated_at: new Date().toISOString(),
         };
 
-        if (data.password && data.password.trim().length > 0) {
+        if (data.password?.trim()) {
           updatePayload.credential_encrypted = data.password.trim();
         }
 
         try {
-          const { error } = await supabase
-            .from('onboarding_records')
-            .update(updatePayload)
-            .eq('id', id);
-
-          if (error) throw error;
-        } catch {
-          // Update in local cache
-          try {
-            const localCustom = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
-            const idx = localCustom.findIndex((r: any) => r.id === id);
-            if (idx >= 0) {
-              localCustom[idx] = { ...localCustom[idx], ...updatePayload };
-              localStorage.setItem('immense_custom_onboardings', JSON.stringify(localCustom));
-            }
-          } catch {
-            // Ignore
-          }
+          await supabase.from('onboarding_records').update(updatePayload).eq('id', id);
+        } catch (dbErr) {
+          console.warn('DB update note:', dbErr);
         }
+
+        try {
+          const existingLocal = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
+          const idx = existingLocal.findIndex((r: any) => r.id === id);
+          if (idx >= 0) {
+            existingLocal[idx] = { ...existingLocal[idx], ...updatePayload };
+            localStorage.setItem('immense_custom_onboardings', JSON.stringify(existingLocal));
+          }
+        } catch {
+          // Ignore
+        }
+
+        // Upload attached documents if any
+        if (gstFile) await uploadDoc(gstFile, 'gst_certificate', id);
+        if (panFile) await uploadDoc(panFile, 'pan_card', id);
+        if (logoFile) await uploadDoc(logoFile, 'logo', id);
 
         await logAudit('record_edited', 'onboarding', id, { brand_name: data.brand_name });
         toast.success('Record Updated', `${data.brand_name} saved successfully.`);
@@ -208,7 +301,7 @@ export function OnboardingForm() {
         navigate(`/onboarding/${id}`);
       } else {
         // -------------------------------------------------------------
-        // CREATE MODE
+        // CREATE / SUBMIT MODE
         // -------------------------------------------------------------
         const insertPayload: any = {
           brand_name: data.brand_name.trim(),
@@ -221,7 +314,7 @@ export function OnboardingForm() {
           credential_encrypted: data.password?.trim() || '',
           platform: data.platform?.trim() || 'Meta Business Manager',
           login_url: data.login_url?.trim() || 'https://business.facebook.com',
-          status: data.status,
+          status: 'submitted', // Enforce Submitted status on new submission
           assigned_to: assignedTo,
           onboarding_date: data.onboarding_date || new Date().toISOString().split('T')[0],
           notes: data.notes?.trim() || '',
@@ -247,7 +340,6 @@ export function OnboardingForm() {
           console.warn('Database insert note:', dbErr);
         }
 
-        // Fallback or local sync
         if (!newRecordId) {
           newRecordId = `rec-${Date.now()}`;
         }
@@ -267,15 +359,34 @@ export function OnboardingForm() {
           // Ignore
         }
 
-        await logAudit('record_created', 'onboarding', newRecordId, { brand_name: data.brand_name });
-        toast.success('Onboarding Initialized', `${data.brand_name} saved to onboarding portal.`);
+        // Upload attached documents and link them to this onboarding record
+        if (gstFile) await uploadDoc(gstFile, 'gst_certificate', newRecordId);
+        if (panFile) await uploadDoc(panFile, 'pan_card', newRecordId);
+        if (logoFile) await uploadDoc(logoFile, 'logo', newRecordId);
+
+        await logAudit('record_created', 'onboarding', newRecordId, {
+          brand_name: data.brand_name,
+          status: 'submitted',
+        });
+
+        toast.success('Onboarding Submitted', `${data.brand_name} submitted successfully.`);
         queryClient.invalidateQueries({ queryKey: ['onboarding-records'] });
         queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
-        navigate(`/onboarding/${newRecordId}`);
+        queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+
+        // Trigger Success Confirmation Modal
+        setSuccessModalData({
+          open: true,
+          brandName: data.brand_name,
+          recordId: newRecordId,
+          submittedAt: format(new Date(), 'dd MMM yyyy, hh:mm a'),
+          status: 'submitted',
+        });
       }
     } catch (err: any) {
       console.error('Submission error:', err);
-      toast.error('Save Failed', err.message || 'An error occurred while saving.');
+      setFormGlobalError(err.message || 'An error occurred while submitting. Your data has been preserved.');
+      toast.error('Submission Failed', err.message || 'An error occurred while submitting.');
     }
   };
 
@@ -298,79 +409,58 @@ export function OnboardingForm() {
 
   return (
     <PageLayout title={isEditing ? `Edit: ${existingRecord?.brand_name || 'Record'}` : 'New WhatsApp Onboarding'}>
-      <form onSubmit={handleSubmit(onSubmit, onValidationErrors)} className="space-y-6 max-w-4xl mx-auto">
-        {/* Top Header */}
+      <form onSubmit={handleSubmit(onSubmit, onValidationErrors)} className="max-w-4xl mx-auto space-y-6">
+        {/* Back link */}
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => navigate(isEditing ? `/onboarding/${id}` : '/onboarding')}
-              className="p-2 text-gray-500 hover:text-gray-900 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors shadow-2xs cursor-pointer"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-            <div>
-              <h1 className="text-xl font-bold text-gray-900">
-                {isEditing ? `Edit ${existingRecord?.brand_name || 'Record'}` : 'Initialize WhatsApp Onboarding'}
-              </h1>
-              <p className="text-xs text-gray-500">
-                {isEditing ? 'Update client credentials and onboarding status' : 'Register brand, credentials & setup private vault'}
-              </p>
-            </div>
-          </div>
+          <button
+            type="button"
+            onClick={() => navigate(isEditing ? `/onboarding/${id}` : '/onboarding')}
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-gray-500 hover:text-gray-900 transition-colors cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            {isEditing ? 'Back to Record' : 'Back to Directory'}
+          </button>
 
-          <div className="flex items-center gap-3">
-            <button
-              type="button"
-              onClick={() => navigate(isEditing ? `/onboarding/${id}` : '/onboarding')}
-              className="px-4 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-colors cursor-pointer"
-            >
-              Cancel
-            </button>
-            <button
-              type="submit"
-              disabled={isSubmitting}
-              className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-            >
-              <Save className="w-4 h-4" />
-              {isSubmitting ? 'Saving...' : isEditing ? 'Update Record' : 'Submit & Open Vault'}
-            </button>
+          <div className="flex items-center gap-1.5 text-xs text-emerald-700 bg-emerald-50 px-3 py-1 rounded-full font-medium border border-emerald-100">
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            WhatsApp Business API Provisioning
           </div>
         </div>
 
-        {/* Global validation summary alert */}
-        {Object.keys(errors).length > 0 && (
-          <div className="p-4 rounded-xl bg-red-50 border border-red-200 flex items-start gap-3 text-red-800">
-            <AlertCircle className="w-5 h-5 text-red-600 flex-shrink-0 mt-0.5" />
-            <div className="text-xs">
-              <p className="font-semibold mb-1">Please correct the following before saving:</p>
-              <ul className="list-disc list-inside space-y-0.5">
-                {Object.entries(errors).map(([field, err]) => (
-                  <li key={field}>{String(err?.message || `${field} is required`)}</li>
-                ))}
-              </ul>
+        {/* Global Error Banner */}
+        {formGlobalError && (
+          <div className="p-4 rounded-2xl bg-red-50 border border-red-200 flex items-start gap-2.5 text-red-700 text-xs">
+            <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold">Submission Error</p>
+              <p>{formGlobalError}</p>
             </div>
           </div>
         )}
 
-        {/* Section 1: Client & Brand Information */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-2xs space-y-5">
-          <div className="flex items-center gap-2.5 pb-4 border-b border-gray-100">
-            <Building2 className="w-5 h-5 text-[#1677FF]" />
-            <h2 className="text-sm font-bold text-gray-900">Client & Brand Identity</h2>
+        {/* SECTION 1: Client Information */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-gray-100">
+            <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF]">
+              <Building2 className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900">Client Information</h3>
+              <p className="text-xs text-gray-500">Legal entity and brand registration details</p>
+            </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
                 Brand Name <span className="text-red-500">*</span>
               </label>
               <input
-                type="text"
                 {...register('brand_name')}
+                type="text"
                 placeholder="e.g. Prestige Estates"
-                className={`w-full px-3.5 py-2 text-xs bg-gray-50 border rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] transition-all ${
-                  errors.brand_name ? 'border-red-400 focus:ring-red-400 bg-red-50/20' : 'border-gray-200'
+                className={`w-full px-3.5 py-2 text-xs bg-gray-50 border rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] ${
+                  errors.brand_name ? 'border-red-500 bg-red-50/20' : 'border-gray-200'
                 }`}
               />
               {errors.brand_name && (
@@ -380,28 +470,30 @@ export function OnboardingForm() {
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Official Registered Company Name
+                Legal Company Name
               </label>
               <input
-                type="text"
                 {...register('company_name')}
-                placeholder="e.g. Prestige Group Projects Private Limited"
+                type="text"
+                placeholder="e.g. Prestige Estates Projects Limited"
                 className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
               />
             </div>
+          </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                WhatsApp Business Phone Number <span className="text-red-500">*</span>
+                WhatsApp Business Number <span className="text-red-500">*</span>
               </label>
               <div className="relative">
-                <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <Phone className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="tel"
                   {...register('whatsapp_number')}
+                  type="text"
                   placeholder="+91 98450 12345"
-                  className={`w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] transition-all ${
-                    errors.whatsapp_number ? 'border-red-400 focus:ring-red-400 bg-red-50/20' : 'border-gray-200'
+                  className={`w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] ${
+                    errors.whatsapp_number ? 'border-red-500 bg-red-50/20' : 'border-gray-200'
                   }`}
                 />
               </div>
@@ -412,29 +504,31 @@ export function OnboardingForm() {
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Client Contact Person Name
+                Contact Person Name
               </label>
               <div className="relative">
-                <User className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <User className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="text"
                   {...register('contact_person')}
-                  placeholder="e.g. Rahul Narang"
+                  type="text"
+                  placeholder="e.g. Rajesh Kumar"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
             </div>
+          </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Contact Person Email
+                Contact Email Address
               </label>
               <div className="relative">
-                <Mail className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <Mail className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="email"
                   {...register('contact_email')}
-                  placeholder="rahul.narang@prestige.com"
+                  type="email"
+                  placeholder="rajesh@prestige.com"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
@@ -442,14 +536,14 @@ export function OnboardingForm() {
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Direct Contact Phone
+                Alternative Contact Number
               </label>
               <div className="relative">
-                <Phone className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <Phone className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="tel"
                   {...register('contact_number')}
-                  placeholder="+91 98450 12345"
+                  type="text"
+                  placeholder="+91 80 2559 1080"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
@@ -457,27 +551,29 @@ export function OnboardingForm() {
           </div>
         </div>
 
-        {/* Section 2: Platform Credentials & Access */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-2xs space-y-5">
-          <div className="flex items-center gap-2.5 pb-4 border-b border-gray-100">
-            <Shield className="w-5 h-5 text-amber-500" />
+        {/* SECTION 2: Meta / WhatsApp Credentials */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-gray-100">
+            <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
+              <Shield className="w-5 h-5" />
+            </div>
             <div>
-              <h2 className="text-sm font-bold text-gray-900">Platform Secrets & Access Credentials</h2>
-              <p className="text-[11px] text-gray-500">Stored with server-side AES-256 encryption. Every access generates an audit trail.</p>
+              <h3 className="text-base font-bold text-gray-900">Meta & Platform Credentials</h3>
+              <p className="text-xs text-gray-500">Encrypted server-side with AES-256 vault protection</p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Platform Username / Business ID
+                Meta Business Username / WABA ID
               </label>
               <div className="relative">
-                <User className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <User className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="text"
                   {...register('username')}
-                  placeholder="meta_prestige_bot"
+                  type="text"
+                  placeholder="admin@prestige.com or WABA_98234"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
@@ -485,27 +581,29 @@ export function OnboardingForm() {
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Password / API Access Token {isEditing && '(Leave blank to retain current)'}
+                Password / Access Token
               </label>
               <div className="relative">
-                <KeyRound className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <KeyRound className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="password"
                   {...register('password')}
-                  placeholder={isEditing ? '•••••••••••• (Unchanged)' : 'Enter password or system token'}
-                  className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                  type="password"
+                  placeholder="••••••••••••"
+                  className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl font-mono focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
             </div>
+          </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                WhatsApp / BSP Platform
+                Platform Name
               </label>
               <input
-                type="text"
                 {...register('platform')}
-                placeholder="e.g. Meta Cloud API (WABA), Gupshup, Twilio"
+                type="text"
+                placeholder="Meta Business Manager"
                 className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
               />
             </div>
@@ -515,10 +613,10 @@ export function OnboardingForm() {
                 Platform Login URL
               </label>
               <div className="relative">
-                <Globe className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+                <Globe className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
-                  type="text"
                   {...register('login_url')}
+                  type="url"
                   placeholder="https://business.facebook.com"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
@@ -527,25 +625,92 @@ export function OnboardingForm() {
           </div>
         </div>
 
-        {/* Section 3: Status & Assignment */}
-        <div className="bg-white rounded-2xl border border-gray-200 p-6 shadow-2xs space-y-5">
-          <div className="flex items-center gap-2.5 pb-4 border-b border-gray-100">
-            <Calendar className="w-5 h-5 text-indigo-500" />
-            <h2 className="text-sm font-bold text-gray-900">Assignment & Onboarding Schedule</h2>
+        {/* SECTION 3: Required Compliance Documents */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF]">
+                <FolderLock className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Upload Compliance & Identity Documents</h3>
+                <p className="text-xs text-gray-500">
+                  Attach GST, PAN, or Brand Logo (PDF, JPG, PNG, DOCX up to 10MB)
+                </p>
+              </div>
+            </div>
+            <span className="text-[11px] font-semibold text-blue-700 bg-blue-50 px-2.5 py-1 rounded-full border border-blue-100">
+              Vault Attachment
+            </span>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Onboarding Date
-              </label>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            {/* GST Certificate */}
+            <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2">
+              <span className="text-xs font-bold text-gray-800">1. GST Certificate</span>
+              <p className="text-[10px] text-gray-500">PDF or Clear Image scan</p>
               <input
-                type="date"
-                {...register('onboarding_date')}
-                className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.docx,.doc"
+                onChange={(e) => setGstFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
               />
+              {gstFile && (
+                <p className="text-[10px] text-emerald-600 font-semibold truncate flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> {gstFile.name}
+                </p>
+              )}
             </div>
 
+            {/* PAN Card */}
+            <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2">
+              <span className="text-xs font-bold text-gray-800">2. PAN Card</span>
+              <p className="text-[10px] text-gray-500">Business or Director PAN</p>
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.docx,.doc"
+                onChange={(e) => setPanFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
+              />
+              {panFile && (
+                <p className="text-[10px] text-emerald-600 font-semibold truncate flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> {panFile.name}
+                </p>
+              )}
+            </div>
+
+            {/* Brand Logo */}
+            <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2">
+              <span className="text-xs font-bold text-gray-800">3. Brand Logo</span>
+              <p className="text-[10px] text-gray-500">PNG / JPG Profile Logo</p>
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.doc"
+                onChange={(e) => setLogoFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
+              />
+              {logoFile && (
+                <p className="text-[10px] text-emerald-600 font-semibold truncate flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> {logoFile.name}
+                </p>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* SECTION 4: Status, Assignment & Notes */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex items-center gap-2.5 pb-3 border-b border-gray-100">
+            <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF]">
+              <Calendar className="w-5 h-5" />
+            </div>
+            <div>
+              <h3 className="text-base font-bold text-gray-900">Assignment & Status Control</h3>
+              <p className="text-xs text-gray-500">Assign onboarding executive and track progress</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
                 Onboarding Status
@@ -582,7 +747,7 @@ export function OnboardingForm() {
 
           <div>
             <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-              Internal Notes & Onboarding Scope
+              Internal Notes & Scope
             </label>
             <textarea
               {...register('notes')}
@@ -593,7 +758,7 @@ export function OnboardingForm() {
           </div>
         </div>
 
-        {/* Action Buttons */}
+        {/* Action Buttons with Primary Submit */}
         <div className="flex items-center justify-end gap-3 pt-2">
           <button
             type="button"
@@ -606,13 +771,39 @@ export function OnboardingForm() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="inline-flex items-center gap-2 px-6 py-2.5 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+            className="inline-flex items-center gap-2 px-8 py-3 text-xs font-bold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-md transition-all disabled:opacity-50 cursor-pointer"
           >
-            <Save className="w-4 h-4" />
-            {isSubmitting ? 'Saving...' : isEditing ? 'Update Record' : 'Submit & Open Vault'}
+            <Send className="w-4 h-4" />
+            {isSubmitting
+              ? isEditing
+                ? 'Updating...'
+                : 'Submitting WhatsApp Onboarding...'
+              : isEditing
+              ? 'Update WhatsApp Record'
+              : 'Submit WhatsApp Onboarding'}
           </button>
         </div>
       </form>
+
+      {/* Submission Success Confirmation Modal */}
+      {successModalData && (
+        <SubmissionSuccessModal
+          open={successModalData.open}
+          onClose={() => {
+            setSuccessModalData(null);
+            navigate(`/onboarding/${successModalData.recordId}`);
+          }}
+          onViewRecord={() => {
+            setSuccessModalData(null);
+            navigate(`/onboarding/${successModalData.recordId}`);
+          }}
+          type="whatsapp"
+          brandName={successModalData.brandName}
+          recordId={successModalData.recordId}
+          submittedAt={successModalData.submittedAt}
+          status={successModalData.status}
+        />
+      )}
     </PageLayout>
   );
 }
