@@ -13,28 +13,58 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   try {
-    const targetAccount = process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com';
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const refreshToken = process.env.GOOGLE_REFRESH_TOKEN;
+    let targetAccount = process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com';
+    const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
+    const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
+    let refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
 
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co';
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
+    const supabaseServiceKey = (
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_KEY ||
+      process.env.SUPABASE_KEY ||
+      ''
+    ).trim();
+
+    // 1. Read stored Google Drive tokens and email from database app_config
+    if (supabaseUrl && supabaseServiceKey) {
+      try {
+        const configRes = await fetch(`${supabaseUrl}/rest/v1/app_config?select=key,value`, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+        if (configRes.ok) {
+          const configRows: Array<{ key: string; value: string }> = await configRes.json().catch(() => []);
+          const tokenRow = configRows.find((r) => r.key === 'google_drive_refresh_token');
+          const emailRow = configRows.find((r) => r.key === 'google_drive_email');
+          if (tokenRow?.value) {
+            refreshToken = tokenRow.value.trim();
+          }
+          if (emailRow?.value) {
+            targetAccount = emailRow.value.trim();
+          }
+        }
+      } catch (err: any) {
+        console.warn('Error reading app_config for Google Drive:', err.message);
+      }
+    }
 
     let storageUsed = 2.4 * 1024 * 1024 * 1024; // 2.4 GB default
     let storageTotal = 15 * 1024 * 1024 * 1024; // 15 GB default Google Free Tier
     let isConnected = false;
 
-    // Check Google Drive API Quota if tokens exist
+    // 2. Check Google Drive API Quota if tokens exist
     if (clientId && clientSecret && refreshToken) {
       try {
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
           headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
           body: new URLSearchParams({
-            client_id: clientId.trim(),
-            client_secret: clientSecret.trim(),
-            refresh_token: refreshToken.trim(),
+            client_id: clientId,
+            client_secret: clientSecret,
+            refresh_token: refreshToken,
             grant_type: 'refresh_token',
           }),
         });
@@ -45,6 +75,9 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
             headers: { Authorization: `Bearer ${tokenData.access_token}` },
           });
           const aboutData = await aboutRes.json();
+          if (aboutData.user?.emailAddress) {
+            targetAccount = aboutData.user.emailAddress;
+          }
           if (aboutData.storageQuota) {
             storageUsed = Number(aboutData.storageQuota.usage || storageUsed);
             storageTotal = Number(aboutData.storageQuota.limit || storageTotal);
