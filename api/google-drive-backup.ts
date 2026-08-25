@@ -12,7 +12,7 @@ async function getGoogleAccessToken(
   let tokenExpiresAt = 0;
   let userEmail = (process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com').trim();
 
-  // 1. Check Supabase app_config for stored Google OAuth tokens
+  // 1. Read stored Google Drive tokens from PostgreSQL app_config table
   if (supabaseUrl && supabaseServiceKey) {
     try {
       const configRes = await fetch(`${supabaseUrl}/rest/v1/app_config?select=key,value`, {
@@ -33,19 +33,38 @@ async function getGoogleAccessToken(
         if (emailRow?.value) userEmail = emailRow.value.trim();
         if (expiryRow?.value) tokenExpiresAt = new Date(expiryRow.value).getTime();
       }
-    } catch {
-      // Continue
+    } catch (dbErr: any) {
+      console.warn('[GDRIVE-BACKUP] Error reading app_config:', dbErr.message);
     }
   }
 
-  // 2. If access token is still valid, return it
-  if (accessToken && Date.now() < tokenExpiresAt - 60000) {
-    return { token: accessToken, email: userEmail };
+  console.log(`[GDRIVE-BACKUP] Tokens loaded: hasAccess=${Boolean(accessToken)}, hasRefresh=${Boolean(refreshToken)}, expiresAt=${tokenExpiresAt ? new Date(tokenExpiresAt).toISOString() : 'none'}`);
+
+  // 2. Test if cached accessToken is active and verified
+  if (accessToken) {
+    try {
+      const testRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (testRes.ok) {
+        const testData: any = (await testRes.json().catch(() => ({}))) as any;
+        if (testData.user?.emailAddress) {
+          userEmail = testData.user.emailAddress;
+        }
+        console.log(`[GDRIVE-BACKUP] Cached accessToken is active and verified for: ${userEmail}`);
+        return { token: accessToken, email: userEmail };
+      } else {
+        console.log(`[GDRIVE-BACKUP] Cached accessToken returned HTTP ${testRes.status}; attempting refresh.`);
+      }
+    } catch (testErr: any) {
+      console.warn('[GDRIVE-BACKUP] Token test check failed:', testErr.message);
+    }
   }
 
   // 3. Exchange refresh token for fresh access token
   if (clientId && clientSecret && refreshToken) {
     try {
+      console.log('[GDRIVE-BACKUP] Refreshing access token via oauth2.googleapis.com/token...');
       const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -65,7 +84,7 @@ async function getGoogleAccessToken(
 
         // Persist fresh access token to app_config
         if (supabaseUrl && supabaseServiceKey) {
-          fetch(`${supabaseUrl}/rest/v1/app_config?on_conflict=key`, {
+          await fetch(`${supabaseUrl}/rest/v1/app_config?on_conflict=key`, {
             method: 'POST',
             headers: {
               apikey: supabaseServiceKey,
@@ -80,6 +99,7 @@ async function getGoogleAccessToken(
           }).catch(() => {});
         }
 
+        console.log(`[GDRIVE-BACKUP] Successfully obtained and persisted fresh access token (expires in ${expiresIn}s).`);
         return { token: freshToken, email: userEmail };
       }
       return { token: null, error: tokenData.error_description || tokenData.error || 'Failed to exchange refresh token' };
