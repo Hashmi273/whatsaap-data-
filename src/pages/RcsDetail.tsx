@@ -26,7 +26,10 @@ import {
   RefreshCw,
   Image as ImageIcon,
   Layers,
-  Sparkles
+  Sparkles,
+  HardDrive,
+  FolderSync,
+  RotateCw
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
@@ -47,6 +50,7 @@ import type {
 import { isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
+import { downloadClientBackupZip } from '@/lib/zipBackup';
 
 export function RcsDetail() {
   const { id } = useParams<{ id: string }>();
@@ -362,6 +366,44 @@ export function RcsDetail() {
   };
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+
+  // Trigger Google Drive Disaster Recovery Backup
+  const handleTriggerBackup = async () => {
+    if (!record) return;
+    setIsBackingUp(true);
+    toast.info('Google Drive Backup', `Backing up ${record.brand_name} to IMMENSE BACKUP/RCS/${record.company_name || record.brand_name}...`);
+
+    try {
+      const res = await fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recordId: record.id,
+          platform: 'RCS',
+          companyName: record.company_name || record.brand_name,
+          documents: documents || [],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success('Backup Complete', `Successfully archived in Google Drive (parvejweb1@gmail.com).`);
+        queryClient.invalidateQueries({ queryKey: ['rcs-detail', id] });
+      } else {
+        toast.error('Backup Error', data.error || 'Google Drive backup failed. Please retry.');
+      }
+    } catch (err: any) {
+      toast.error('Backup Error', err.message || 'Could not dispatch Google Drive backup.');
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  // Download Complete Client ZIP
+  const handleDownloadClientZip = () => {
+    if (!record) return;
+    downloadClientBackupZip(record as any, documents || [], toast);
+  };
 
   // Download Document with Original Filename Preservation
   const handleDownload = async (doc: OnboardingDocument) => {
@@ -851,6 +893,66 @@ export function RcsDetail() {
                 </p>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* Google Drive Disaster Recovery Secondary Archive Card for RCS */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF]">
+                <HardDrive className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold text-gray-900">Google Drive Secondary Disaster Recovery Archive</h3>
+                <p className="text-xs text-gray-500">
+                  Automated cloud folder hierarchy: <span className="font-mono text-gray-700">IMMENSE BACKUP/RCS/{record.company_name || record.brand_name}/</span>
+                </p>
+              </div>
+            </div>
+
+            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 self-start sm:self-auto">
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600" />
+              Archive Active (parvejweb1@gmail.com)
+            </span>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 pt-1">
+            <button
+              type="button"
+              onClick={() =>
+                window.open(
+                  `https://drive.google.com/drive/u/0/folders/immense-backup-rcs-${encodeURIComponent(
+                    record.company_name || record.brand_name
+                  )}`,
+                  '_blank'
+                )
+              }
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+            >
+              <ExternalLink className="w-3.5 h-3.5" />
+              Open in Google Drive
+            </button>
+
+            <button
+              type="button"
+              onClick={handleTriggerBackup}
+              disabled={isBackingUp}
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-[#1677FF] hover:bg-[#0B5FE0] text-white text-xs font-bold rounded-xl transition-all shadow-2xs cursor-pointer"
+            >
+              <RotateCw className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-spin' : ''}`} />
+              {isBackingUp ? 'Backing Up...' : 'Backup to Google Drive'}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleDownloadClientZip}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+              title="Download full client archive as ZIP"
+            >
+              <Download className="w-3.5 h-3.5" />
+              Download Client Archive (ZIP)
+            </button>
           </div>
         </div>
 

@@ -20,6 +20,7 @@ import { ResetPassword } from '@/pages/ResetPassword';
 import { RcsList } from '@/pages/RcsList';
 import { RcsDetail } from '@/pages/RcsDetail';
 import { RcsForm } from '@/pages/RcsForm';
+import { DisasterRecovery } from '@/pages/DisasterRecovery';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -52,6 +53,7 @@ export function App() {
                 <Route path="/rcs/:id" element={<RcsDetail />} />
                 <Route path="/documents" element={<DocumentVault />} />
                 <Route path="/documents/search" element={<DocumentSearch />} />
+                <Route path="/backup" element={<DisasterRecovery />} />
                 <Route path="/profile" element={<Profile />} />
               </Route>
 

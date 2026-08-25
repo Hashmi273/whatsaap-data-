@@ -27,7 +27,11 @@ import {
   FileImage,
   ScrollText,
   UserCheck,
-  RefreshCw
+  RefreshCw,
+  HardDrive,
+  FolderSync,
+  RotateCw,
+  CheckCircle2
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -41,6 +45,7 @@ import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
 import { isValidUuid } from '@/lib/constants';
 import { downloadDocument } from '@/lib/download';
+import { downloadClientBackupZip } from '@/lib/zipBackup';
 import {
   CATEGORY_OPTIONS,
   STATUS_OPTIONS,
@@ -516,6 +521,44 @@ export function OnboardingDetail() {
   };
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+  const [isBackingUp, setIsBackingUp] = useState(false);
+
+  // Trigger Google Drive Disaster Recovery Backup
+  const handleTriggerBackup = async () => {
+    if (!record) return;
+    setIsBackingUp(true);
+    toast.info('Google Drive Backup', `Backing up ${record.brand_name} to IMMENSE BACKUP/WhatsApp/${record.company_name || record.brand_name}...`);
+
+    try {
+      const res = await fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recordId: record.id,
+          platform: 'WhatsApp',
+          companyName: record.company_name || record.brand_name,
+          documents: documents || [],
+        }),
+      });
+      const data = await res.json();
+      if (data.success) {
+        toast.success('Backup Complete', `Successfully archived in Google Drive (parvejweb1@gmail.com).`);
+        queryClient.invalidateQueries({ queryKey: ['onboarding-detail', id] });
+      } else {
+        toast.error('Backup Error', data.error || 'Google Drive backup failed. Please retry.');
+      }
+    } catch (err: any) {
+      toast.error('Backup Error', err.message || 'Could not dispatch Google Drive backup.');
+    } finally {
+      setIsBackingUp(false);
+    }
+  };
+
+  // Download Complete Client ZIP
+  const handleDownloadClientZip = () => {
+    if (!record) return;
+    downloadClientBackupZip(record, documents || [], toast);
+  };
 
   // Download Document via Signed URL / Stream
   const handleDownload = async (doc: OnboardingDocument) => {
@@ -1015,6 +1058,68 @@ export function OnboardingDetail() {
                   No employee is currently assigned to this brand.
                 </div>
               )}
+            </div>
+
+            {/* Google Drive Disaster Recovery Secondary Archive Card */}
+            <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <HardDrive className="w-4 h-4 text-[#1677FF]" />
+                  <h3 className="text-sm font-bold text-gray-900">Google Drive Secondary Backup</h3>
+                </div>
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                  Active Archive
+                </span>
+              </div>
+
+              <div className="p-3 bg-gray-50 rounded-xl space-y-1.5 text-xs text-gray-600">
+                <p className="font-semibold text-gray-900 flex items-center justify-between">
+                  <span>Target Archive:</span>
+                  <span className="text-[#1677FF] font-mono text-[11px]">parvejweb1@gmail.com</span>
+                </p>
+                <p className="text-[11px] text-gray-500">
+                  Directory: <span className="font-mono text-gray-700">IMMENSE BACKUP/WhatsApp/{record.company_name || record.brand_name}/</span>
+                </p>
+              </div>
+
+              <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() =>
+                    window.open(
+                      `https://drive.google.com/drive/u/0/folders/immense-backup-whatsapp-${encodeURIComponent(
+                        record.company_name || record.brand_name
+                      )}`,
+                      '_blank'
+                    )
+                  }
+                  className="w-full sm:w-auto flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                >
+                  <ExternalLink className="w-3.5 h-3.5" />
+                  Open in Google Drive
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleTriggerBackup}
+                  disabled={isBackingUp}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#1677FF] hover:bg-[#0B5FE0] text-white text-xs font-bold rounded-xl transition-all shadow-2xs cursor-pointer"
+                >
+                  <RotateCw className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-spin' : ''}`} />
+                  {isBackingUp ? 'Backing Up...' : 'Backup Now'}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleDownloadClientZip}
+                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
+                  title="Download complete structured ZIP archive"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  Download ZIP
+                </button>
+              </div>
             </div>
           </div>
         </div>

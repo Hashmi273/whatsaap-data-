@@ -5,6 +5,7 @@ import {
   Radio,
   FolderLock,
   Search,
+  HardDrive,
   Users,
   ScrollText,
   Settings,
@@ -60,6 +61,12 @@ export function Sidebar({ sidebarOpen, setSidebarOpen }: SidebarProps) {
       to: '/documents/search',
       label: 'Document Search',
       icon: Search,
+      show: true,
+    },
+    {
+      to: '/backup',
+      label: 'DR & Cloud Backup',
+      icon: HardDrive,
       show: true,
     },
     {
