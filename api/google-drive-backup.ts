@@ -1,115 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
-
-// Helper to get Google Drive Access Token using OAuth2 Refresh Token from app_config or env
-async function getGoogleAccessToken(
-  supabaseUrl: string,
-  supabaseServiceKey?: string
-): Promise<{ token: string | null; email?: string; error?: string }> {
-  const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
-  const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
-  let refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
-  let accessToken = '';
-  let tokenExpiresAt = 0;
-  let userEmail = (process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com').trim();
-
-  // 1. Read stored Google Drive tokens from PostgreSQL app_config table
-  if (supabaseUrl && supabaseServiceKey) {
-    try {
-      const configRes = await fetch(`${supabaseUrl}/rest/v1/app_config?select=key,value`, {
-        headers: {
-          apikey: supabaseServiceKey,
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-      });
-      if (configRes.ok) {
-        const rows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
-        const tokenRow = rows.find((r) => r.key === 'google_drive_refresh_token');
-        const accessRow = rows.find((r) => r.key === 'google_drive_access_token');
-        const emailRow = rows.find((r) => r.key === 'google_drive_email');
-        const expiryRow = rows.find((r) => r.key === 'google_drive_token_expires_at');
-
-        if (tokenRow?.value) refreshToken = tokenRow.value.trim();
-        if (accessRow?.value) accessToken = accessRow.value.trim();
-        if (emailRow?.value) userEmail = emailRow.value.trim();
-        if (expiryRow?.value) tokenExpiresAt = new Date(expiryRow.value).getTime();
-      }
-    } catch (dbErr: any) {
-      console.warn('[GDRIVE-BACKUP] Error reading app_config:', dbErr.message);
-    }
-  }
-
-  console.log(`[GDRIVE-BACKUP] Tokens loaded: hasAccess=${Boolean(accessToken)}, hasRefresh=${Boolean(refreshToken)}, expiresAt=${tokenExpiresAt ? new Date(tokenExpiresAt).toISOString() : 'none'}`);
-
-  // 2. Test if cached accessToken is active and verified
-  if (accessToken) {
-    try {
-      const testRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=user', {
-        headers: { Authorization: `Bearer ${accessToken}` },
-      });
-      if (testRes.ok) {
-        const testData: any = (await testRes.json().catch(() => ({}))) as any;
-        if (testData.user?.emailAddress) {
-          userEmail = testData.user.emailAddress;
-        }
-        console.log(`[GDRIVE-BACKUP] Cached accessToken is active and verified for: ${userEmail}`);
-        return { token: accessToken, email: userEmail };
-      } else {
-        console.log(`[GDRIVE-BACKUP] Cached accessToken returned HTTP ${testRes.status}; attempting refresh.`);
-      }
-    } catch (testErr: any) {
-      console.warn('[GDRIVE-BACKUP] Token test check failed:', testErr.message);
-    }
-  }
-
-  // 3. Exchange refresh token for fresh access token
-  if (clientId && clientSecret && refreshToken) {
-    try {
-      console.log('[GDRIVE-BACKUP] Refreshing access token via oauth2.googleapis.com/token...');
-      const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({
-          client_id: clientId,
-          client_secret: clientSecret,
-          refresh_token: refreshToken,
-          grant_type: 'refresh_token',
-        }),
-      });
-
-      const tokenData: any = (await tokenRes.json()) as any;
-      if (tokenData.access_token) {
-        const freshToken = tokenData.access_token;
-        const expiresIn = Number(tokenData.expires_in || 3600);
-        const newExpiry = Date.now() + expiresIn * 1000;
-
-        // Persist fresh access token to app_config
-        if (supabaseUrl && supabaseServiceKey) {
-          await fetch(`${supabaseUrl}/rest/v1/app_config?on_conflict=key`, {
-            method: 'POST',
-            headers: {
-              apikey: supabaseServiceKey,
-              Authorization: `Bearer ${supabaseServiceKey}`,
-              'Content-Type': 'application/json',
-              Prefer: 'resolution=merge-duplicates',
-            },
-            body: JSON.stringify([
-              { key: 'google_drive_access_token', value: freshToken },
-              { key: 'google_drive_token_expires_at', value: new Date(newExpiry).toISOString() },
-            ]),
-          }).catch(() => {});
-        }
-
-        console.log(`[GDRIVE-BACKUP] Successfully obtained and persisted fresh access token (expires in ${expiresIn}s).`);
-        return { token: freshToken, email: userEmail };
-      }
-      return { token: null, error: tokenData.error_description || tokenData.error || 'Failed to exchange refresh token' };
-    } catch (err: any) {
-      return { token: null, error: err.message };
-    }
-  }
-
-  return { token: null, error: 'Google Drive is not connected. Please click "Connect Google Drive" in Settings to authenticate.' };
-}
+import { resolveGoogleDriveToken, getSupabaseCredentials } from './_lib/google-drive-auth';
 
 // Find or create a folder in Google Drive (My Drive)
 async function findOrCreateFolder(
@@ -272,24 +162,37 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
     const { recordId } = body;
 
-    const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
-    const supabaseServiceKey = (
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_KEY ||
-      process.env.SUPABASE_KEY ||
-      ''
-    ).trim();
+    const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
 
-    // 1. Authenticate with Google Drive OAuth
-    const { token: accessToken, email: connectedEmail, error: authError } = await getGoogleAccessToken(supabaseUrl, supabaseServiceKey);
+    // 1. Authenticate with Google Drive OAuth via shared resolver
+    const { token: accessToken, email: connectedEmail, error: authError, diagnostics } = await resolveGoogleDriveToken();
 
-    if (!accessToken) {
+    console.log(`[GDRIVE-BACKUP]
+app_config loaded=${diagnostics.appConfigLoaded}
+hasAccessToken=${diagnostics.hasAccessToken}
+hasRefreshToken=${diagnostics.hasRefreshToken}
+hasEmail=${diagnostics.hasEmail}
+tokenExpiry=${diagnostics.tokenExpiry}
+accessTokenValidationStatus=${diagnostics.accessTokenValidationStatus}
+refreshAttempted=${diagnostics.refreshAttempted}
+refreshResponseStatus=${diagnostics.refreshResponseStatus}
+finalAuthenticationStatus=${diagnostics.finalAuthenticationStatus}`);
+
+    if (!accessToken || diagnostics.finalAuthenticationStatus !== 'success') {
       res.statusCode = 400;
       res.setHeader('Content-Type', 'application/json');
       res.end(
         JSON.stringify({
           success: false,
           error: authError || 'Google Drive is not connected. Please click "Connect Google Drive" in Settings first.',
+          diagnostics: {
+            appConfigLoaded: diagnostics.appConfigLoaded,
+            hasAccessToken: diagnostics.hasAccessToken,
+            hasRefreshToken: diagnostics.hasRefreshToken,
+            validationStatus: diagnostics.accessTokenValidationStatus,
+            refreshAttempted: diagnostics.refreshAttempted,
+            refreshStatus: diagnostics.refreshResponseStatus,
+          },
         })
       );
       return;
