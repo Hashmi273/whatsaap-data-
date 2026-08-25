@@ -20,7 +20,9 @@ import {
   AlertCircle,
   UploadCloud,
   FolderLock,
-  Send
+  Send,
+  Eye,
+  EyeOff
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -32,6 +34,8 @@ import { isValidUuid } from '@/lib/constants';
 import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { OnboardingRecord, Profile, DocumentCategory } from '@/types/database';
 import { format } from 'date-fns';
+
+import { uploadDocumentToStorage } from '@/lib/storage';
 
 const onboardingSchema = z.object({
   brand_name: z.string().min(1, 'Brand Name is required'),
@@ -66,6 +70,7 @@ export function OnboardingForm() {
   const [logoFile, setLogoFile] = useState<File | null>(null);
   const [bannerFile, setBannerFile] = useState<File | null>(null);
   const [otherDocFile, setOtherDocFile] = useState<File | null>(null);
+  const [showFormPassword, setShowFormPassword] = useState(false);
 
   // Success Modal State
   const [successModalData, setSuccessModalData] = useState<{
@@ -183,13 +188,10 @@ export function OnboardingForm() {
       const storagePath = `${recordId}/${category}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      try {
-        await supabase.storage.from('onboarding-documents').upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: true,
-        });
-      } catch (e) {
-        console.warn('Storage upload note:', e);
+      // 1. Upload to Supabase Storage (Client + Serverless fallback)
+      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadSuccess) {
+        throw new Error(`Failed to upload ${file.name} to storage.`);
       }
 
       const docPayload: any = {
@@ -206,38 +208,7 @@ export function OnboardingForm() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      try {
-        await supabase.from('onboarding_documents').insert(docPayload);
-      } catch (e) {
-        console.warn('DB doc insert note:', e);
-      }
-
-      let blobUrl = '';
-      try {
-        blobUrl = URL.createObjectURL(file);
-      } catch {
-        // Ignore
-      }
-
-      const newDocItem: any = {
-        id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        ...docPayload,
-        created_at: new Date().toISOString(),
-        localPreviewUrl: blobUrl,
-        uploader_profile: {
-          id: profile?.id || 'immense-admin-001',
-          full_name: profile?.full_name || 'Immense Super Admin',
-          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
-        },
-      };
-
-      const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${recordId}`) || '[]');
-      localDocs.unshift(newDocItem);
-      localStorage.setItem(`immense_docs_${recordId}`, JSON.stringify(localDocs));
-
-      const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-      globalDocs.unshift(newDocItem);
-      localStorage.setItem('immense_all_vault_docs', JSON.stringify(globalDocs));
+      await supabase.from('onboarding_documents').insert(docPayload);
     } catch (err) {
       console.warn('Doc upload helper error:', err);
     }
@@ -586,51 +557,66 @@ export function OnboardingForm() {
           </div>
         </div>
 
-        {/* SECTION 2: Meta / WhatsApp Credentials */}
+        {/* SECTION 2: Facebook / Meta Login Details */}
         <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
-          <div className="flex items-center gap-2.5 pb-3 border-b border-gray-100">
-            <div className="p-2 rounded-xl bg-amber-50 text-amber-600">
-              <Shield className="w-5 h-5" />
+          <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF]">
+                <Shield className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Facebook / Meta Login Details</h3>
+                <p className="text-xs text-gray-500">Corporate Meta Business Manager credentials (encrypted server-side with AES-256)</p>
+              </div>
             </div>
-            <div>
-              <h3 className="text-base font-bold text-gray-900">Meta & Platform Credentials</h3>
-              <p className="text-xs text-gray-500">Encrypted server-side with AES-256 vault protection</p>
-            </div>
+            <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-gray-100 text-gray-600 border border-gray-200">
+              Optional
+            </span>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Meta Business Username / WABA ID
+                Facebook / Meta Username or Login Email
               </label>
               <div className="relative">
                 <User className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
                   {...register('username')}
                   type="text"
-                  placeholder="admin@prestige.com or WABA_98234"
+                  placeholder="e.g. business.admin@company.com or WABA_98234"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
+              <p className="text-[10px] text-gray-400 mt-1">Facebook / Meta account email or business login identifier</p>
             </div>
 
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                Password / Access Token
+                Facebook / Meta Password
               </label>
               <div className="relative">
                 <KeyRound className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
                 <input
                   {...register('password')}
-                  type="password"
+                  type={showFormPassword ? 'text' : 'password'}
                   placeholder="••••••••••••"
-                  className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl font-mono focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                  className="w-full pl-9 pr-10 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl font-mono focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowFormPassword(!showFormPassword)}
+                  className="absolute right-3 top-2 text-gray-400 hover:text-gray-600 p-0.5 transition-colors cursor-pointer"
+                  title={showFormPassword ? 'Hide password' : 'Show password'}
+                >
+                  {showFormPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4 text-gray-500" />}
+                </button>
               </div>
+              <p className="text-[10px] text-gray-400 mt-1">Encrypted on submission. Masked by default in detail view.</p>
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 pt-1">
             <div>
               <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
                 Platform Name

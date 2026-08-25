@@ -97,47 +97,12 @@ export function DocumentVault() {
         // Ignore
       }
 
-      let globalVaultDocs: any[] = [];
-      try {
-        globalVaultDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-      } catch {
-        // Ignore
-      }
-
       // 3. Map documents to each brand
       const grouped = allRecords.map((rec) => {
-        let recLocalDocs: any[] = [];
-        try {
-          recLocalDocs = JSON.parse(localStorage.getItem(`immense_docs_${rec.id}`) || '[]');
-        } catch {
-          // Ignore
-        }
-
         const recDbDocs = dbDocs.filter((d) => d.onboarding_id === rec.id);
-        const recGlobalDocs = globalVaultDocs.filter((d) => d.onboarding_id === rec.id);
-        const demoDocs = INITIAL_DEMO_DOCUMENTS.filter((d) => d.onboarding_id === rec.id);
-
-        const mergedDocs: any[] = [...recLocalDocs];
-
-        recGlobalDocs.forEach((d) => {
-          if (!mergedDocs.some((m) => m.id === d.id || m.file_name === d.file_name)) {
-            mergedDocs.push(d);
-          }
-        });
-
-        recDbDocs.forEach((d) => {
-          if (!mergedDocs.some((m) => m.id === d.id || m.file_name === d.file_name)) {
-            mergedDocs.push(d);
-          }
-        });
-
-        if (mergedDocs.length === 0 && demoDocs.length > 0) {
-          mergedDocs.push(...demoDocs);
-        }
-
         return {
           ...rec,
-          documents: mergedDocs,
+          documents: recDbDocs,
         };
       });
 
@@ -146,39 +111,40 @@ export function DocumentVault() {
   });
 
   const handlePreview = async (doc: OnboardingDocument) => {
+    setPreviewDoc(doc);
+    if (!doc.storage_path) {
+      setPreviewSignedUrl(null);
+      return;
+    }
+
     try {
-      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string') {
-        setPreviewDoc(doc);
-        setPreviewSignedUrl((doc as any).localPreviewUrl);
+      // 1. Generate fresh signed URL from Supabase client
+      const { data: signData, error: signErr } = await supabase.storage
+        .from('onboarding-documents')
+        .createSignedUrl(doc.storage_path, 3600);
+
+      if (!signErr && signData?.signedUrl) {
+        setPreviewSignedUrl(signData.signedUrl);
         return;
       }
 
-      if (doc.storage_path) {
-        try {
-          const signEndpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&mode=url&disposition=inline`;
-          const res = await fetch(signEndpoint);
-          const data = await res.json().catch(() => ({}));
+      // 2. Direct binary download via client session
+      const { data: blobData, error: downloadErr } = await supabase.storage
+        .from('onboarding-documents')
+        .download(doc.storage_path);
 
-          if (res.ok && data?.signedUrl) {
-            setPreviewDoc(doc);
-            setPreviewSignedUrl(data.signedUrl);
-            return;
-          }
-        } catch {
-          // Fallback to inline stream
-        }
-
-        const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-        setPreviewDoc(doc);
-        setPreviewSignedUrl(streamUrl);
+      if (!downloadErr && blobData && blobData.size > 0) {
+        const blobUrl = URL.createObjectURL(blobData);
+        setPreviewSignedUrl(blobUrl);
         return;
       }
 
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      // 3. Fallback to serverless stream
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     } catch {
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     }
   };
 

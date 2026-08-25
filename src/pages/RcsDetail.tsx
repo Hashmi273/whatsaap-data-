@@ -51,6 +51,7 @@ import { isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
+import { uploadDocumentToStorage } from '@/lib/storage';
 
 export function RcsDetail() {
   const { id } = useParams<{ id: string }>();
@@ -143,14 +144,7 @@ export function RcsDetail() {
   const { data: documents } = useQuery({
     queryKey: ['onboarding-documents', id],
     queryFn: async () => {
-      let localDocs: any[] = [];
-      try {
-        localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-      } catch {
-        // Ignore
-      }
-
-      let dbDocs: any[] = [];
+      if (!id) return [];
       try {
         const { data, error } = await supabase
           .from('onboarding_documents')
@@ -161,19 +155,12 @@ export function RcsDetail() {
           .eq('onboarding_id', id)
           .order('created_at', { ascending: false });
 
-        if (!error && data) dbDocs = data;
-      } catch {
-        // Ignore
+        if (!error && data) return data as OnboardingDocument[];
+      } catch (err) {
+        console.warn('Doc fetch error:', err);
       }
 
-      const merged = [...localDocs];
-      dbDocs.forEach((d) => {
-        if (!merged.some((m) => m.id === d.id || m.file_name === d.file_name)) {
-          merged.push(d);
-        }
-      });
-
-      return merged as OnboardingDocument[];
+      return [] as OnboardingDocument[];
     },
   });
 
@@ -208,19 +195,13 @@ export function RcsDetail() {
       const storagePath = `${id}/${category}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      // 1. Storage Upload
-      try {
-        await supabase.storage
-          .from('onboarding-documents')
-          .upload(storagePath, file, {
-            cacheControl: '3600',
-            upsert: true,
-          });
-      } catch (storageErr) {
-        console.warn('Storage upload note:', storageErr);
+      // 1. Upload to Supabase Storage (Client + Serverless fallback)
+      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadSuccess) {
+        throw new Error('Physical storage upload failed — document could not be vaulted.');
       }
 
-      // 2. Metadata Insert / Replace
+      // 2. Metadata Insert / Replace ONLY after storage succeeds
       const docPayload: any = {
         onboarding_id: id,
         file_name: file.name,
@@ -235,54 +216,13 @@ export function RcsDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      try {
-        await supabase.from('onboarding_documents').insert(docPayload);
-      } catch (metaErr) {
-        console.warn('Metadata insert note:', metaErr);
+      const { error: insertErr } = await supabase.from('onboarding_documents').insert(docPayload);
+      if (insertErr) {
+        throw new Error(`Database record failed: ${insertErr.message}`);
       }
 
       // 3. Local Blob Preview Generation
-      let blobUrl = '';
-      try {
-        blobUrl = URL.createObjectURL(file);
-      } catch {
-        // Ignore
-      }
-
-      const newDocItem: any = {
-        id: `doc-${Date.now()}`,
-        ...docPayload,
-        created_at: new Date().toISOString(),
-        localPreviewUrl: blobUrl,
-        uploader_profile: {
-          id: profile?.id || 'immense-admin-001',
-          full_name: profile?.full_name || 'Immense Super Admin',
-          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
-        },
-      };
-
-      // 4. Update Local Caches (Remove old doc if replacing)
-      try {
-        const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-        let updatedLocal = localDocs;
-        if (oldDocIdToReplace) {
-          updatedLocal = updatedLocal.filter((d: any) => d.id !== oldDocIdToReplace && d.category !== category);
-        }
-        updatedLocal.unshift(newDocItem);
-        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updatedLocal));
-
-        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-        let updatedGlobal = globalDocs;
-        if (oldDocIdToReplace) {
-          updatedGlobal = updatedGlobal.filter((d: any) => d.id !== oldDocIdToReplace && !(d.onboarding_id === id && d.category === category));
-        }
-        updatedGlobal.unshift(newDocItem);
-        localStorage.setItem('immense_all_vault_docs', JSON.stringify(updatedGlobal));
-      } catch {
-        // Ignore
-      }
-
-      // 5. Log Audit
+      // 3. Log Audit
       await logAudit('document_uploaded', 'document', id, {
         file_name: file.name,
         category,
@@ -327,41 +267,42 @@ export function RcsDetail() {
     }
   };
 
-  // Preview Document
+  // Generate Fresh Signed URL or Authenticated Stream for Preview
   const handlePreview = async (doc: OnboardingDocument) => {
+    setPreviewDoc(doc);
+    if (!doc.storage_path) {
+      setPreviewSignedUrl(null);
+      return;
+    }
+
     try {
-      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string') {
-        setPreviewDoc(doc);
-        setPreviewSignedUrl((doc as any).localPreviewUrl);
+      // 1. Generate fresh signed URL from Supabase client
+      const { data: signData, error: signErr } = await supabase.storage
+        .from('onboarding-documents')
+        .createSignedUrl(doc.storage_path, 3600);
+
+      if (!signErr && signData?.signedUrl) {
+        setPreviewSignedUrl(signData.signedUrl);
         return;
       }
 
-      if (doc.storage_path) {
-        try {
-          const signEndpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&mode=url&disposition=inline`;
-          const res = await fetch(signEndpoint);
-          const data = await res.json().catch(() => ({}));
+      // 2. Direct binary download via client session
+      const { data: blobData, error: downloadErr } = await supabase.storage
+        .from('onboarding-documents')
+        .download(doc.storage_path);
 
-          if (res.ok && data?.signedUrl) {
-            setPreviewDoc(doc);
-            setPreviewSignedUrl(data.signedUrl);
-            return;
-          }
-        } catch {
-          // Fallback
-        }
-
-        const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-        setPreviewDoc(doc);
-        setPreviewSignedUrl(streamUrl);
+      if (!downloadErr && blobData && blobData.size > 0) {
+        const blobUrl = URL.createObjectURL(blobData);
+        setPreviewSignedUrl(blobUrl);
         return;
       }
 
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      // 3. Fallback to serverless stream
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     } catch {
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     }
   };
 

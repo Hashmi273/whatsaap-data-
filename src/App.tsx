@@ -21,6 +21,8 @@ import { RcsList } from '@/pages/RcsList';
 import { RcsDetail } from '@/pages/RcsDetail';
 import { RcsForm } from '@/pages/RcsForm';
 import { DisasterRecovery } from '@/pages/DisasterRecovery';
+import { PrivacyPolicy } from '@/pages/PrivacyPolicy';
+import { TermsOfService } from '@/pages/TermsOfService';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -42,6 +44,8 @@ export function App() {
               {/* Public Routes */}
               <Route path="/login" element={<Login />} />
               <Route path="/reset-password" element={<ResetPassword />} />
+              <Route path="/privacy-policy" element={<PrivacyPolicy />} />
+              <Route path="/terms-of-service" element={<TermsOfService />} />
 
               {/* Protected Authenticated Routes */}
               <Route element={<ProtectedRoute />}>

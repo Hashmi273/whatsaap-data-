@@ -56,14 +56,6 @@ export function DocumentSearch() {
   const { data: documents, isLoading } = useQuery({
     queryKey: ['global-documents-search'],
     queryFn: async () => {
-      let localDocs: any[] = [];
-      try {
-        localDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-      } catch {
-        // Ignore
-      }
-
-      let dbDocs: DocumentWithRelations[] = [];
       try {
         const { data, error } = await supabase
           .from('onboarding_documents')
@@ -74,25 +66,14 @@ export function DocumentSearch() {
           `)
           .order('created_at', { ascending: false });
 
-        if (!error && data && data.length > 0) {
-          dbDocs = data as DocumentWithRelations[];
+        if (!error && data) {
+          return data as DocumentWithRelations[];
         }
-      } catch {
-        // Fallback
+      } catch (err) {
+        console.warn('Doc search fetch error:', err);
       }
 
-      const merged = [...localDocs];
-      dbDocs.forEach((d) => {
-        if (!merged.some((m) => m.id === d.id || m.file_name === d.file_name)) {
-          merged.push(d);
-        }
-      });
-
-      if (merged.length === 0) {
-        return INITIAL_DEMO_DOCUMENTS as unknown as DocumentWithRelations[];
-      }
-
-      return merged as DocumentWithRelations[];
+      return [] as DocumentWithRelations[];
     },
   });
 
@@ -133,39 +114,40 @@ export function DocumentSearch() {
   }, [documents, searchTerm, selectedCategory]);
 
   const handlePreview = async (doc: OnboardingDocument) => {
+    setPreviewDoc(doc);
+    if (!doc.storage_path) {
+      setPreviewSignedUrl(null);
+      return;
+    }
+
     try {
-      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string') {
-        setPreviewDoc(doc);
-        setPreviewSignedUrl((doc as any).localPreviewUrl);
+      // 1. Generate fresh signed URL from Supabase client
+      const { data: signData, error: signErr } = await supabase.storage
+        .from('onboarding-documents')
+        .createSignedUrl(doc.storage_path, 3600);
+
+      if (!signErr && signData?.signedUrl) {
+        setPreviewSignedUrl(signData.signedUrl);
         return;
       }
 
-      if (doc.storage_path) {
-        try {
-          const signEndpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&mode=url&disposition=inline`;
-          const res = await fetch(signEndpoint);
-          const data = await res.json().catch(() => ({}));
+      // 2. Direct binary download via client session
+      const { data: blobData, error: downloadErr } = await supabase.storage
+        .from('onboarding-documents')
+        .download(doc.storage_path);
 
-          if (res.ok && data?.signedUrl) {
-            setPreviewDoc(doc);
-            setPreviewSignedUrl(data.signedUrl);
-            return;
-          }
-        } catch {
-          // Fallback
-        }
-
-        const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-        setPreviewDoc(doc);
-        setPreviewSignedUrl(streamUrl);
+      if (!downloadErr && blobData && blobData.size > 0) {
+        const blobUrl = URL.createObjectURL(blobData);
+        setPreviewSignedUrl(blobUrl);
         return;
       }
 
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      // 3. Fallback to serverless stream
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     } catch {
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     }
   };
 

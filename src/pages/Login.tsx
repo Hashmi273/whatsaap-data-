@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate, Navigate } from 'react-router-dom';
+import { useNavigate, Navigate, Link } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { zodResolver } from '@hookform/resolvers/zod';
 import * as z from 'zod';
@@ -254,10 +254,19 @@ export function Login() {
             </button>
           </form>
 
-          <div className="mt-8 pt-6 border-t border-gray-100 text-center">
+          <div className="mt-8 pt-6 border-t border-gray-100 text-center space-y-2">
             <p className="text-[11px] text-gray-500">
               Only authorized staff of <strong>Immense Smart Solutions</strong> with verified corporate domain credentials may sign in.
             </p>
+            <div className="flex justify-center gap-4 text-[11px] font-semibold text-gray-500 pt-1">
+              <Link to="/privacy-policy" className="text-gray-600 hover:text-[#1677FF] transition-colors">
+                Privacy Policy
+              </Link>
+              <span>•</span>
+              <Link to="/terms-of-service" className="text-gray-600 hover:text-[#1677FF] transition-colors">
+                Terms of Service
+              </Link>
+            </div>
           </div>
         </div>
       </div>

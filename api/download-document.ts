@@ -48,8 +48,8 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
-    // Clean filename
-    const safeFileName = (fileName || storagePath.split('/').pop() || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+    // Clean and validate filename & extension
+    const safeFileName = (fileName || storagePath.split('/').pop() || 'document.pdf').replace(/[^a-zA-Z0-9._-]/g, '_');
     const ext = safeFileName.split('.').pop()?.toLowerCase() || '';
 
     let defaultMime = 'application/octet-stream';
@@ -60,127 +60,168 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     else if (ext === 'docx') defaultMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
     else if (ext === 'xlsx') defaultMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
-    const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co';
-    const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const authHeader = (req.headers['authorization'] || '').toString().trim();
+    const tokenFromHeader = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-    // 1. If service role key is configured, generate signed URL or fetch from Supabase Storage
+    const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
+    const supabaseServiceKey = (
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_KEY ||
+      process.env.SUPABASE_KEY ||
+      tokenFromHeader ||
+      process.env.SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      ''
+    ).trim();
+
+    const cleanPath = (storagePath.startsWith('/') ? storagePath.slice(1) : storagePath).trim();
+    const encodedPath = encodeURIComponent(cleanPath).replace(/%2F/g, '/');
+
+    // -------------------------------------------------------------
+    // ATTEMPT 1: Generate Fresh Signed URL via Supabase Storage API
+    // -------------------------------------------------------------
     if (supabaseUrl && supabaseServiceKey) {
-      const cleanPath = storagePath.startsWith('/') ? storagePath.slice(1) : storagePath;
-      
-      // Request fresh signed URL (1 hour expiry)
-      const signRes = await fetch(`${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`, {
-        method: 'POST',
-        headers: {
-          apikey: supabaseServiceKey.trim(),
-          Authorization: `Bearer ${supabaseServiceKey.trim()}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ expiresIn: 3600 }), // 1 hour token
-      });
+      try {
+        const signEndpoint = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodedPath}`;
+        const signRes = await fetch(signEndpoint, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expiresIn: 3600 }),
+        });
 
-      const signData = await signRes.json().catch(() => ({}));
+        if (signRes.ok) {
+          const signData = await signRes.json().catch(() => ({}));
+          const rawUrl = signData?.signedURL || signData?.signedUrl || '';
 
-      if (signRes.ok && signData?.signedURL) {
-        const fullSignedUrl = signData.signedURL.startsWith('http')
-          ? signData.signedURL
-          : `${supabaseUrl}/storage/v1${signData.signedURL}`;
+          if (rawUrl) {
+            let fullSignedUrl = rawUrl;
+            if (!rawUrl.startsWith('http://') && !rawUrl.startsWith('https://')) {
+              if (rawUrl.startsWith('/storage/v1')) {
+                fullSignedUrl = `${supabaseUrl}${rawUrl}`;
+              } else if (rawUrl.startsWith('/')) {
+                fullSignedUrl = `${supabaseUrl}/storage/v1${rawUrl}`;
+              } else {
+                fullSignedUrl = `${supabaseUrl}/storage/v1/${rawUrl}`;
+              }
+            }
 
-        if (mode === 'url') {
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: true, signedUrl: fullSignedUrl, fileName: safeFileName }));
-          return;
+            // If client specifically requested mode=url, return verified signed URL
+            if (mode === 'url') {
+              // Verify that the signed URL is actually accessible
+              const headCheck = await fetch(fullSignedUrl, { method: 'HEAD' });
+              if (headCheck.ok) {
+                res.statusCode = 200;
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({ success: true, signedUrl: fullSignedUrl, fileName: safeFileName }));
+                return;
+              }
+            }
+
+            // Stream the real binary file to the browser
+            const fileRes = await fetch(fullSignedUrl);
+            if (fileRes.ok) {
+              const contentType = fileRes.headers.get('content-type') || defaultMime;
+              const buffer = Buffer.from(await fileRes.arrayBuffer());
+
+              if (buffer.length > 0) {
+                res.statusCode = 200;
+                res.setHeader('Content-Type', contentType);
+                res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
+                res.setHeader('Content-Length', buffer.length.toString());
+                res.end(buffer);
+                return;
+              }
+            }
+          }
         }
-
-        // Stream the file directly
-        const fileRes = await fetch(fullSignedUrl);
-        if (fileRes.ok) {
-          const contentType = fileRes.headers.get('content-type') || defaultMime;
-          const buffer = Buffer.from(await fileRes.arrayBuffer());
-
-          res.statusCode = 200;
-          res.setHeader('Content-Type', contentType);
-          res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
-          res.setHeader('Content-Length', buffer.length.toString());
-          res.end(buffer);
-          return;
-        }
+      } catch (signErr) {
+        console.warn('Signed URL retrieval attempt error:', signErr);
       }
 
-      // Try direct object retrieval with service role key
-      const directRes = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`, {
-        headers: {
-          apikey: supabaseServiceKey.trim(),
-          Authorization: `Bearer ${supabaseServiceKey.trim()}`,
-        },
-      });
+      // -------------------------------------------------------------
+      // ATTEMPT 2: Direct Authenticated Object Download
+      // -------------------------------------------------------------
+      try {
+        const directEndpoint = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedPath}`;
+        const directRes = await fetch(directEndpoint, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
 
-      if (directRes.ok) {
-        const contentType = directRes.headers.get('content-type') || defaultMime;
-        const buffer = Buffer.from(await directRes.arrayBuffer());
+        if (directRes.ok) {
+          const contentType = directRes.headers.get('content-type') || defaultMime;
+          const buffer = Buffer.from(await directRes.arrayBuffer());
 
-        res.statusCode = 200;
-        res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
-        res.setHeader('Content-Length', buffer.length.toString());
-        res.end(buffer);
-        return;
+          if (buffer.length > 0) {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
+            res.setHeader('Content-Length', buffer.length.toString());
+            res.end(buffer);
+            return;
+          }
+        }
+      } catch (directErr) {
+        console.warn('Direct authenticated retrieval attempt error:', directErr);
+      }
+
+      // -------------------------------------------------------------
+      // ATTEMPT 3: Standard Object Endpoint
+      // -------------------------------------------------------------
+      try {
+        const standardEndpoint = `${supabaseUrl}/storage/v1/object/${bucket}/${encodedPath}`;
+        const standardRes = await fetch(standardEndpoint, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+
+        if (standardRes.ok) {
+          const contentType = standardRes.headers.get('content-type') || defaultMime;
+          const buffer = Buffer.from(await standardRes.arrayBuffer());
+
+          if (buffer.length > 0) {
+            res.statusCode = 200;
+            res.setHeader('Content-Type', contentType);
+            res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
+            res.setHeader('Content-Length', buffer.length.toString());
+            res.end(buffer);
+            return;
+          }
+        }
+      } catch (standardErr) {
+        console.warn('Standard endpoint retrieval attempt error:', standardErr);
       }
     }
 
-    // 2. Fallback sample document binary generator for seeded demo records
-    if (ext === 'pdf') {
-      const pdfString = `%PDF-1.4
-1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
-2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
-3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
-4 0 obj<</Length 135>>stream
-BT /F1 18 Tf 50 720 Td (IMMENSE Enterprise Document: ${safeFileName}) Tj 0 -30 Td /F1 12 Tf (Confidential Document Vault Record) Tj ET
-endstream
-endobj
-5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
-xref
-0 6
-0000000000 65535 f
-0000000010 00000 n
-0000000060 00000 n
-0000000117 00000 n
-0000000224 00000 n
-0000000409 00000 n
-trailer<</Size 6/Root 1 0 R>>
-startxref
-479
-%%EOF`;
-      const buffer = Buffer.from(pdfString);
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'application/pdf');
-      res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
-      res.setHeader('Content-Length', buffer.length.toString());
-      res.end(buffer);
-      return;
-    } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
-      // 1x1 valid PNG binary
-      const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
-      const buffer = Buffer.from(pngBase64, 'base64');
-      res.statusCode = 200;
-      res.setHeader('Content-Type', ext === 'png' ? 'image/png' : 'image/jpeg');
-      res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
-      res.setHeader('Content-Length', buffer.length.toString());
-      res.end(buffer);
-      return;
-    } else {
-      const content = `IMMENSE Document Vault\nDocument: ${safeFileName}\nTimestamp: ${new Date().toISOString()}`;
-      const buffer = Buffer.from(content);
-      res.statusCode = 200;
-      res.setHeader('Content-Type', defaultMime);
-      res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
-      res.setHeader('Content-Length', buffer.length.toString());
-      res.end(buffer);
-      return;
-    }
+    // -------------------------------------------------------------
+    // NO FAKE FALLBACK — RETURN 404 IF OBJECT IS NOT IN STORAGE
+    // -------------------------------------------------------------
+    res.statusCode = 404;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: 'Document unavailable — storage object not found.',
+        storagePath: cleanPath,
+        bucket,
+      })
+    );
   } catch (err: any) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: err.message || 'Internal error downloading document.' }));
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: err.message || 'Internal error processing document request.',
+      })
+    );
   }
 }

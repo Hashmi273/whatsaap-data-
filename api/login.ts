@@ -98,6 +98,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
     let authenticated = false;
     let authUserId = '';
+    let authSession: any = null;
 
     // 2. If valid Anon Key exists, attempt Supabase token grant
     if (supabaseUrl && supabaseAnonKey && !supabaseAnonKey.includes('dummy') && !supabaseAnonKey.includes('your-supabase')) {
@@ -120,6 +121,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         if (authRes.ok && authData?.access_token) {
           authenticated = true;
           authUserId = authData.user?.id || '';
+          authSession = authData;
           console.log(`[AUTH-LOGIN] Supabase token grant succeeded for: ${cleanEmail}`);
         }
       } catch (err: any) {
@@ -245,6 +247,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           aud: 'authenticated',
         },
         profile: userProfile,
+        session: authSession,
       })
     );
   } catch (err: any) {

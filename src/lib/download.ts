@@ -1,3 +1,4 @@
+import { supabase } from './supabase';
 import { logAudit } from './audit';
 
 interface DownloadOptions {
@@ -38,30 +39,37 @@ export async function downloadDocument(
 
     let blob: Blob | null = null;
 
-    // 1. Direct local preview blob download if available
-    if (doc.localPreviewUrl && (doc.localPreviewUrl.startsWith('blob:') || doc.localPreviewUrl.startsWith('data:'))) {
-      try {
-        const res = await fetch(doc.localPreviewUrl);
-        if (res.ok) {
-          blob = await res.blob();
-        }
-      } catch {
-        // Fallback to server endpoint
+    // 1. Direct download via Supabase client session
+    try {
+      const { data, error } = await supabase.storage
+        .from('onboarding-documents')
+        .download(doc.storage_path);
+
+      if (!error && data && data.size > 0) {
+        blob = data;
       }
+    } catch {
+      // Fallback
     }
 
-    // 2. Fetch binary stream via secure serverless endpoint
+    // 2. Fallback to serverless endpoint
     if (!blob) {
-      const endpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}`;
-      const res = await fetch(endpoint);
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData?.session?.access_token;
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const endpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=attachment`;
+      const res = await fetch(endpoint, { headers });
       if (!res.ok) {
-        throw new Error('Unable to download this document. Please try again.');
+        const errJson = await res.json().catch(() => ({}));
+        throw new Error(errJson.error || 'Document unavailable — storage object not found.');
       }
       blob = await res.blob();
     }
 
     if (!blob || blob.size === 0) {
-      throw new Error('Unable to download this document. Please try again.');
+      throw new Error('Document unavailable — storage object not found.');
     }
 
     // 3. Trigger Real Browser Download with Original Filename
@@ -90,13 +98,13 @@ export async function downloadDocument(
     }
 
     if (options?.toast) {
-      options.toast.success('Download Complete', `${doc.file_name} saved successfully.`);
+      options.toast.success('Download Complete', `${doc.file_name} (${(blob.size / 1024).toFixed(1)} KB) saved successfully.`);
     }
 
     return true;
   } catch (err: any) {
     if (options?.toast) {
-      options.toast.error('Download Failed', 'Unable to download this document. Please try again.');
+      options.toast.error('Download Failed', err.message || 'Document unavailable — storage object not found.');
     }
     return false;
   } finally {

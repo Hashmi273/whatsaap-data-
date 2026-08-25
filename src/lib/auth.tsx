@@ -301,7 +301,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       };
     }
 
-    // 1. Primary Authenticate via Serverless API Endpoint (/api/login)
+    // 1. Direct Supabase Auth signInWithPassword attempt
+    try {
+      const { data: authData, error: authErr } = await supabase.auth.signInWithPassword({
+        email: cleanEmail,
+        password,
+      });
+      if (!authErr && authData?.session) {
+        setSession(authData.session);
+        setUser(authData.user);
+        const p = await fetchProfile(authData.user.id);
+        if (p) {
+          setProfile(p);
+          setLoading(false);
+          return { error: null };
+        }
+      }
+    } catch {
+      // Continue to serverless endpoint
+    }
+
+    // 2. Serverless API Endpoint (/api/login)
     try {
       const serverRes = await fetch('/api/login', {
         method: 'POST',
@@ -312,6 +332,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const serverData = await serverRes.json().catch(() => ({}));
 
       if (serverRes.ok && serverData.success && serverData.profile) {
+        if (serverData.session?.access_token && serverData.session?.refresh_token) {
+          try {
+            const { data: setSessData } = await supabase.auth.setSession({
+              access_token: serverData.session.access_token,
+              refresh_token: serverData.session.refresh_token,
+            });
+            if (setSessData?.session) {
+              setSession(setSessData.session);
+            }
+          } catch {
+            // Ignore
+          }
+        }
+
         setUser(serverData.user);
         setProfile(serverData.profile);
         setLoading(false);

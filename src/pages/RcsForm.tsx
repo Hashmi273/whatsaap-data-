@@ -25,6 +25,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { SubmissionSuccessModal } from '@/components/shared/SubmissionSuccessModal';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
+import { uploadDocumentToStorage } from '@/lib/storage';
 import { isValidUuid } from '@/lib/constants';
 import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile, DocumentCategory } from '@/types/database';
@@ -141,13 +142,10 @@ export function RcsForm() {
       const storagePath = `${recordId}/${category}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      try {
-        await supabase.storage.from('onboarding-documents').upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: true,
-        });
-      } catch (e) {
-        console.warn('Storage upload note:', e);
+      // 1. Upload to Supabase Storage (Client + Serverless fallback)
+      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadSuccess) {
+        throw new Error(`Failed to upload ${file.name} to storage.`);
       }
 
       const docPayload: any = {
@@ -164,38 +162,7 @@ export function RcsForm() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      try {
-        await supabase.from('onboarding_documents').insert(docPayload);
-      } catch (e) {
-        console.warn('DB doc insert note:', e);
-      }
-
-      let blobUrl = '';
-      try {
-        blobUrl = URL.createObjectURL(file);
-      } catch {
-        // Ignore
-      }
-
-      const newDocItem: any = {
-        id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        ...docPayload,
-        created_at: new Date().toISOString(),
-        localPreviewUrl: blobUrl,
-        uploader_profile: {
-          id: profile?.id || 'immense-admin-001',
-          full_name: profile?.full_name || 'Immense Super Admin',
-          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
-        },
-      };
-
-      const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${recordId}`) || '[]');
-      localDocs.unshift(newDocItem);
-      localStorage.setItem(`immense_docs_${recordId}`, JSON.stringify(localDocs));
-
-      const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-      globalDocs.unshift(newDocItem);
-      localStorage.setItem('immense_all_vault_docs', JSON.stringify(globalDocs));
+      await supabase.from('onboarding_documents').insert(docPayload);
     } catch (err) {
       console.warn('Doc upload helper error:', err);
     }

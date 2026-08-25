@@ -46,6 +46,7 @@ import { hasPermission } from '@/lib/permissions';
 import { isValidUuid } from '@/lib/constants';
 import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
+import { uploadDocumentToStorage } from '@/lib/storage';
 import {
   CATEGORY_OPTIONS,
   STATUS_OPTIONS,
@@ -199,13 +200,6 @@ export function OnboardingDetail() {
     queryKey: ['onboarding-documents', id],
     queryFn: async () => {
       if (!id) return [];
-      let localCustomDocs: any[] = [];
-      try {
-        localCustomDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-      } catch {
-        // Ignore
-      }
-
       try {
         const { data, error } = await supabase
           .from('onboarding_documents')
@@ -216,16 +210,14 @@ export function OnboardingDetail() {
           .eq('onboarding_id', id)
           .order('created_at', { ascending: false });
 
-        if (!error && data && data.length > 0) {
-          return [...localCustomDocs, ...data] as (OnboardingDocument & { uploader_profile: Profile | null })[];
+        if (!error && data) {
+          return data as (OnboardingDocument & { uploader_profile: Profile | null })[];
         }
-      } catch {
-        // Fallback
+      } catch (err) {
+        console.warn('Document fetch error:', err);
       }
 
-      // Return demo docs for this onboarding
-      const demoDocs = INITIAL_DEMO_DOCUMENTS.filter((d) => d.onboarding_id === id);
-      return [...localCustomDocs, ...(demoDocs.length > 0 ? demoDocs : INITIAL_DEMO_DOCUMENTS.slice(0, 2))] as (OnboardingDocument & { uploader_profile: Profile | null })[];
+      return [] as (OnboardingDocument & { uploader_profile: Profile | null })[];
     },
   });
 
@@ -395,19 +387,13 @@ export function OnboardingDetail() {
       const storagePath = `${id}/${uploadCategory}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      // 1. Attempt upload to Supabase Storage
-      try {
-        await supabase.storage
-          .from('onboarding-documents')
-          .upload(storagePath, selectedFile, {
-            cacheControl: '3600',
-            upsert: false,
-          });
-      } catch (storageErr) {
-        console.warn('Storage upload note:', storageErr);
+      // 1. Upload to Supabase Storage (Client + Serverless fallback)
+      const uploadSuccess = await uploadDocumentToStorage(storagePath, selectedFile, 'onboarding-documents');
+      if (!uploadSuccess) {
+        throw new Error('Storage upload failed — physical object could not be vaulted.');
       }
 
-      // 2. Insert metadata record in onboarding_documents
+      // 2. Insert metadata record in onboarding_documents ONLY after storage succeeded
       const docPayload: any = {
         onboarding_id: id,
         file_name: selectedFile.name,
@@ -422,46 +408,12 @@ export function OnboardingDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      try {
-        await supabase.from('onboarding_documents').insert(docPayload);
-      } catch (metaErr) {
-        console.warn('Metadata insert note:', metaErr);
+      const { error: insertErr } = await supabase.from('onboarding_documents').insert(docPayload);
+      if (insertErr) {
+        throw new Error(`Database record failed: ${insertErr.message}`);
       }
 
-      // 3. Persist into local vault cache for instant preview & download
-      let blobUrl = '';
-      try {
-        blobUrl = URL.createObjectURL(selectedFile);
-      } catch {
-        // Ignore
-      }
-
-      const newDocItem: any = {
-        id: `doc-${Date.now()}`,
-        ...docPayload,
-        created_at: new Date().toISOString(),
-        localPreviewUrl: blobUrl,
-        uploader_profile: {
-          id: profile?.id || 'immense-admin-001',
-          full_name: profile?.full_name || 'Immense Super Admin',
-          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
-        },
-      };
-
-      try {
-        const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-        localDocs.unshift(newDocItem);
-        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(localDocs));
-
-        // Global vault sync
-        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-        globalDocs.unshift(newDocItem);
-        localStorage.setItem('immense_all_vault_docs', JSON.stringify(globalDocs));
-      } catch {
-        // Ignore
-      }
-
-      // 4. Log Audit
+      // 3. Log Audit
       await logAudit('document_uploaded', 'document', id, {
         file_name: selectedFile.name,
         category: uploadCategory,
@@ -482,41 +434,42 @@ export function OnboardingDetail() {
     }
   };
 
-  // Generate Temporary Signed URL for Preview
+  // Generate Fresh Signed URL or Authenticated Stream for Preview
   const handlePreview = async (doc: OnboardingDocument) => {
+    setPreviewDoc(doc);
+    if (!doc.storage_path) {
+      setPreviewSignedUrl(null);
+      return;
+    }
+
     try {
-      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string') {
-        setPreviewDoc(doc);
-        setPreviewSignedUrl((doc as any).localPreviewUrl);
+      // 1. Generate fresh signed URL from Supabase client
+      const { data: signData, error: signErr } = await supabase.storage
+        .from('onboarding-documents')
+        .createSignedUrl(doc.storage_path, 3600);
+
+      if (!signErr && signData?.signedUrl) {
+        setPreviewSignedUrl(signData.signedUrl);
         return;
       }
 
-      if (doc.storage_path) {
-        try {
-          const signEndpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&mode=url&disposition=inline`;
-          const res = await fetch(signEndpoint);
-          const data = await res.json().catch(() => ({}));
+      // 2. Direct binary download via client session
+      const { data: blobData, error: downloadErr } = await supabase.storage
+        .from('onboarding-documents')
+        .download(doc.storage_path);
 
-          if (res.ok && data?.signedUrl) {
-            setPreviewDoc(doc);
-            setPreviewSignedUrl(data.signedUrl);
-            return;
-          }
-        } catch {
-          // Fallback
-        }
-
-        const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-        setPreviewDoc(doc);
-        setPreviewSignedUrl(streamUrl);
+      if (!downloadErr && blobData && blobData.size > 0) {
+        const blobUrl = URL.createObjectURL(blobData);
+        setPreviewSignedUrl(blobUrl);
         return;
       }
 
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      // 3. Fallback to serverless stream
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     } catch {
-      setPreviewDoc(doc);
-      setPreviewSignedUrl(null);
+      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+      setPreviewSignedUrl(streamUrl);
     }
   };
 
@@ -584,27 +537,11 @@ export function OnboardingDetail() {
       }
 
       // 2. Delete metadata row
-      try {
+      if (doc.id) {
         await supabase
           .from('onboarding_documents')
           .delete()
           .eq('id', doc.id);
-      } catch {
-        // Ignore
-      }
-
-      // 3. Delete from local cache
-      try {
-        const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-        const updated = localDocs.filter((d: any) => d.id !== doc.id && d.file_name !== doc.file_name);
-        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updated));
-
-        // Global vault sync
-        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-        const updatedGlobal = globalDocs.filter((d: any) => d.id !== doc.id && d.file_name !== doc.file_name);
-        localStorage.setItem('immense_all_vault_docs', JSON.stringify(updatedGlobal));
-      } catch {
-        // Ignore
       }
 
       await logAudit('document_deleted', 'document', id, {
@@ -631,13 +568,10 @@ export function OnboardingDetail() {
       const storagePath = `${id}/${docToReplace.category}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      try {
-        await supabase.storage.from('onboarding-documents').upload(storagePath, file, {
-          cacheControl: '3600',
-          upsert: true,
-        });
-      } catch (storageErr) {
-        console.warn('Storage upload note:', storageErr);
+      // 1. Upload to Supabase Storage (Client + Serverless fallback)
+      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadSuccess) {
+        throw new Error('Storage upload failed — replacement file could not be stored.');
       }
 
       const docPayload: any = {
@@ -654,43 +588,11 @@ export function OnboardingDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      try {
-        await supabase.from('onboarding_documents').insert(docPayload);
-      } catch (metaErr) {
-        console.warn('Metadata insert note:', metaErr);
-      }
+      await supabase.from('onboarding_documents').insert(docPayload);
 
-      let blobUrl = '';
-      try {
-        blobUrl = URL.createObjectURL(file);
-      } catch {
-        // Ignore
-      }
-
-      const newDocItem: any = {
-        id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
-        ...docPayload,
-        created_at: new Date().toISOString(),
-        localPreviewUrl: blobUrl,
-        uploader_profile: {
-          id: profile?.id || 'immense-admin-001',
-          full_name: profile?.full_name || 'Immense Super Admin',
-          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
-        },
-      };
-
-      try {
-        const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-        const updatedLocal = localDocs.filter((d: any) => d.id !== docToReplace.id);
-        updatedLocal.unshift(newDocItem);
-        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updatedLocal));
-
-        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-        const updatedGlobal = globalDocs.filter((d: any) => d.id !== docToReplace.id);
-        updatedGlobal.unshift(newDocItem);
-        localStorage.setItem('immense_all_vault_docs', JSON.stringify(updatedGlobal));
-      } catch {
-        // Ignore
+      // Remove old document record if exists
+      if (docToReplace.id && isValidUuid(docToReplace.id)) {
+        await supabase.from('onboarding_documents').delete().eq('id', docToReplace.id);
       }
 
       await logAudit('document_uploaded', 'document', id, {
@@ -700,14 +602,14 @@ export function OnboardingDetail() {
         is_replacement: true,
       });
 
-      toast.success('Document Updated', `${file.name} replaced ${docToReplace.file_name}.`);
+      toast.success('Document Replaced', `${file.name} successfully updated.`);
       setReplaceTargetDoc(null);
       queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
       queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
       queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
       queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
     } catch (err: any) {
-      toast.error('Replace Failed', err.message || 'Could not update document.');
+      toast.error('Replace Failed', err.message || 'Could not replace document.');
     }
   };
 
@@ -890,16 +792,16 @@ export function OnboardingDetail() {
 
           {/* Right Column: Encrypted Credential Vault & Staff Assignment */}
           <div className="space-y-6">
-            {/* Encrypted Credentials Vault */}
+            {/* Facebook / Meta Login Details Vault */}
             <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
               <div className="flex items-center justify-between pb-3 border-b border-gray-100">
                 <div className="flex items-center gap-2">
-                  <div className="p-2 rounded-lg bg-amber-50 text-amber-600">
+                  <div className="p-2 rounded-lg bg-blue-50 text-[#1677FF]">
                     <KeyRound className="w-4 h-4" />
                   </div>
-                  <h3 className="text-sm font-bold text-gray-900">Platform Credentials</h3>
+                  <h3 className="text-sm font-bold text-gray-900">Facebook / Meta Login Details</h3>
                 </div>
-                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-amber-100 text-amber-800">
+                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
                   AES-256 Vault
                 </span>
               </div>
@@ -908,14 +810,14 @@ export function OnboardingDetail() {
               <div className="p-3 bg-amber-50/80 rounded-xl border border-amber-200 text-xs text-amber-900 flex items-start gap-2.5">
                 <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
                 <p className="text-[11px] leading-tight">
-                  Confidential platform secrets. Revealing or copying will register an immutable event in the audit trail.
+                  Confidential Meta / Facebook credentials. Revealing or copying will register an immutable event in the audit trail.
                 </p>
               </div>
 
-              {/* Username Field */}
+              {/* Username / Login Email Field */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                  Platform Username / API ID
+                  Facebook / Meta Username or Login Email
                 </label>
                 <div className="flex items-center gap-2">
                   <input
@@ -927,7 +829,7 @@ export function OnboardingDetail() {
                   {record.username && (
                     <button
                       onClick={() => handleCopy(record.username, 'username')}
-                      className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors"
+                      className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors cursor-pointer"
                       title="Copy Username"
                     >
                       {copiedField === 'username' ? (
@@ -943,7 +845,7 @@ export function OnboardingDetail() {
               {/* Secret Password Field (Masked / Decrypted) */}
               <div className="space-y-1">
                 <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                  Platform Password / Secret
+                  Facebook / Meta Password
                 </label>
                 <div className="flex items-center gap-2">
                   <input
@@ -964,7 +866,7 @@ export function OnboardingDetail() {
                     <>
                       <button
                         onClick={handleTogglePassword}
-                        className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors"
+                        className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors cursor-pointer"
                         title={showPassword ? 'Hide Secret' : 'Reveal Secret (Audited)'}
                       >
                         {showPassword ? (
@@ -982,7 +884,7 @@ export function OnboardingDetail() {
                             handleCopy(decryptedPassword, 'password');
                           }
                         }}
-                        className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors"
+                        className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors cursor-pointer"
                         title="Copy Secret (Audited)"
                       >
                         {copiedField === 'password' ? (

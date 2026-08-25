@@ -52,13 +52,14 @@ CONFIDENTIAL & PROPRIETARY — IMMENSE SMART SOLUTIONS
 
     rootFolder.file('Client_Summary.txt', summaryText);
 
-    // 2. Client Profile JSON (.json)
+    // 2. Client Profile JSON (.json) — SANITIZED (No credentials or passwords)
+    const { credential_encrypted, ...safeRecord } = record as any;
     const jsonMetadata = {
       manifestVersion: '1.0.0',
       archiveSource: 'Immense Enterprise Secondary Backup',
       backupAccount: 'parvejweb1@gmail.com',
       exportDate: new Date().toISOString(),
-      record,
+      record: safeRecord,
       documentsCount: documents.length,
       documentsList: documents.map((d) => ({
         id: d.id,

@@ -102,20 +102,20 @@ export function DocumentPreviewModal({
               </div>
             ) : (
               <div className="text-center p-8 bg-white rounded-3xl shadow-sm border border-gray-200 max-w-md space-y-4">
-                <div className="w-16 h-16 bg-blue-50 text-[#1677FF] rounded-2xl flex items-center justify-center mx-auto">
-                  <FileImage className="w-8 h-8" />
+                <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto">
+                  <AlertCircle className="w-8 h-8" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-gray-900 text-sm">{fileName}</h4>
+                  <h4 className="font-bold text-gray-900 text-sm">Document unavailable — storage object not found.</h4>
                   <p className="text-xs text-gray-500 mt-1">
-                    Image is securely vaulted. You can download the full-resolution asset.
+                    The requested file is not found in the private storage bucket.
                   </p>
                 </div>
                 <button
                   onClick={onDownload}
                   className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#1677FF] text-white rounded-xl font-semibold text-xs hover:bg-[#0B5FE0] shadow-xs cursor-pointer"
                 >
-                  <Download className="w-4 h-4" /> Download Original Image
+                  <Download className="w-4 h-4" /> Try Download
                 </button>
               </div>
             )
@@ -133,20 +133,20 @@ export function DocumentPreviewModal({
               </div>
             ) : (
               <div className="text-center p-8 bg-white rounded-3xl shadow-sm border border-gray-200 max-w-md space-y-4">
-                <div className="w-16 h-16 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto">
-                  <FileText className="w-8 h-8" />
+                <div className="w-16 h-16 bg-amber-50 text-amber-600 rounded-2xl flex items-center justify-center mx-auto">
+                  <AlertCircle className="w-8 h-8" />
                 </div>
                 <div>
-                  <h4 className="font-bold text-gray-900 text-sm">{fileName}</h4>
+                  <h4 className="font-bold text-gray-900 text-sm">Document unavailable — storage object not found.</h4>
                   <p className="text-xs text-gray-500 mt-1">
-                    PDF Document securely stored in compliance vault.
+                    The PDF binary is unavailable in the private storage bucket.
                   </p>
                 </div>
                 <button
                   onClick={onDownload}
                   className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#1677FF] text-white rounded-xl font-semibold text-xs hover:bg-[#0B5FE0] shadow-xs cursor-pointer"
                 >
-                  <Download className="w-4 h-4" /> Download PDF Document
+                  <Download className="w-4 h-4" /> Try Download
                 </button>
               </div>
             )
