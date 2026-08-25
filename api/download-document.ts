@@ -64,17 +64,17 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     const tokenFromHeader = authHeader.replace(/^Bearer\s+/i, '').trim();
 
     const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
-    const supabaseAnonKey = (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
-    const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || '').trim();
-
-    const apiKeyHeader = supabaseServiceKey || supabaseAnonKey;
-    const authHeaderValue = supabaseServiceKey
-      ? `Bearer ${supabaseServiceKey}`
-      : tokenFromHeader
-      ? `Bearer ${tokenFromHeader}`
-      : supabaseAnonKey
-      ? `Bearer ${supabaseAnonKey}`
-      : '';
+    const supabaseServiceKey = (
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_KEY ||
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      tokenFromHeader ||
+      ''
+    ).trim();
 
     const cleanPath = (storagePath.startsWith('/') ? storagePath.slice(1) : storagePath).trim();
     const encodedPath = encodeURIComponent(cleanPath).replace(/%2F/g, '/');
@@ -82,13 +82,13 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     // -------------------------------------------------------------
     // ATTEMPT 1: Generate Fresh Signed URL via Supabase Storage API
     // -------------------------------------------------------------
-    if (supabaseUrl && apiKeyHeader) {
+    if (supabaseUrl && supabaseServiceKey) {
       try {
         const signHeaders: Record<string, string> = {
           'Content-Type': 'application/json',
+          'apikey': supabaseServiceKey,
+          'Authorization': `Bearer ${supabaseServiceKey}`,
         };
-        if (apiKeyHeader) signHeaders['apikey'] = apiKeyHeader;
-        if (authHeaderValue) signHeaders['Authorization'] = authHeaderValue;
 
         const signEndpoint = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodedPath}`;
         const signRes = await fetch(signEndpoint, {

@@ -64,19 +64,32 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     const tokenFromHeader = authHeader.replace(/^Bearer\s+/i, '').trim();
 
     const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
-    const supabaseAnonKey = (process.env.VITE_SUPABASE_ANON_KEY || process.env.SUPABASE_ANON_KEY || '').trim();
-    const supabaseServiceKey = (process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SERVICE_KEY || process.env.SUPABASE_KEY || '').trim();
+    const supabaseServiceKey = (
+      process.env.SUPABASE_SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_SERVICE_KEY ||
+      process.env.SUPABASE_SECRET_KEY ||
+      process.env.SERVICE_ROLE_KEY ||
+      process.env.SUPABASE_KEY ||
+      process.env.SUPABASE_ANON_KEY ||
+      process.env.VITE_SUPABASE_ANON_KEY ||
+      tokenFromHeader ||
+      ''
+    ).trim();
 
-    // In Supabase Kong gateway, apikey must be a valid project key (service role or anon)
-    const apiKeyHeader = supabaseServiceKey || supabaseAnonKey;
-    // Authorization header carries either the service role bearer or the user's active session bearer
-    const authHeaderValue = supabaseServiceKey
-      ? `Bearer ${supabaseServiceKey}`
-      : tokenFromHeader
-      ? `Bearer ${tokenFromHeader}`
-      : supabaseAnonKey
-      ? `Bearer ${supabaseAnonKey}`
-      : '';
+    // Server-side diagnostic log (never logs secret value, only whether key exists)
+    console.log(`[STORAGE-UPLOAD] Key configured: ${Boolean(supabaseServiceKey)}, Target: ${cleanPath}, Size: ${fileBuffer.length} bytes`);
+
+    if (!supabaseServiceKey) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: 'SUPABASE_SERVICE_ROLE_KEY is not configured in Vercel environment variables. Please add SUPABASE_SERVICE_ROLE_KEY in Vercel Project Settings.',
+        })
+      );
+      return;
+    }
 
     const cleanPath = storagePath.startsWith('/') ? storagePath.slice(1) : storagePath;
     const fileBuffer = Buffer.from(fileBase64, 'base64');
@@ -84,12 +97,13 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     const headers: Record<string, string> = {
       'Content-Type': contentType,
       'x-upsert': 'true',
+      'apikey': supabaseServiceKey,
+      'Authorization': `Bearer ${supabaseServiceKey}`,
     };
-    if (apiKeyHeader) headers['apikey'] = apiKeyHeader;
-    if (authHeaderValue) headers['Authorization'] = authHeaderValue;
 
-    // Upload to Supabase Storage
-    const uploadRes = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`, {
+    // Upload to Supabase Storage REST endpoint
+    const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
+    const uploadRes = await fetch(uploadUrl, {
       method: 'POST',
       headers,
       body: fileBuffer,
