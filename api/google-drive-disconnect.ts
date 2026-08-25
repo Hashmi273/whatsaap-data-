@@ -1,5 +1,27 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
+function getSupabaseCredentials() {
+  const supabaseUrl = (
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    'https://ztrskyefkugevypzfecl.supabase.co'
+  ).replace(/\/+$/, '');
+
+  const supabaseServiceKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_KEY ||
+    ''
+  ).trim();
+
+  return { supabaseUrl, supabaseServiceKey };
+}
+
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
@@ -12,16 +34,10 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
   }
 
   try {
-    const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
-    const supabaseServiceKey = (
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_KEY ||
-      process.env.SUPABASE_KEY ||
-      ''
-    ).trim();
+    const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
 
     if (supabaseUrl && supabaseServiceKey) {
-      await fetch(`${supabaseUrl}/rest/v1/app_config?key=in.(google_drive_refresh_token,google_drive_access_token,google_drive_email,google_drive_connected_at)`, {
+      await fetch(`${supabaseUrl}/rest/v1/app_config?key=in.(google_drive_refresh_token,google_drive_access_token,google_drive_email,google_drive_connected_at,google_drive_token_expires_at)`, {
         method: 'DELETE',
         headers: {
           apikey: supabaseServiceKey,

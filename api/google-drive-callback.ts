@@ -1,5 +1,27 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
+function getSupabaseCredentials() {
+  const supabaseUrl = (
+    process.env.SUPABASE_URL ||
+    process.env.VITE_SUPABASE_URL ||
+    'https://ztrskyefkugevypzfecl.supabase.co'
+  ).replace(/\/+$/, '');
+
+  const supabaseServiceKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_KEY ||
+    process.env.SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_ANON_KEY ||
+    process.env.VITE_SUPABASE_KEY ||
+    ''
+  ).trim();
+
+  return { supabaseUrl, supabaseServiceKey };
+}
+
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
@@ -103,13 +125,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     }
 
     // Store tokens securely server-side in Supabase PostgreSQL app_config table using on_conflict=key
-    const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
-    const supabaseServiceKey = (
-      process.env.SUPABASE_SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_SERVICE_KEY ||
-      process.env.SUPABASE_KEY ||
-      ''
-    ).trim();
+    const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
 
     if (supabaseUrl && supabaseServiceKey) {
       try {
