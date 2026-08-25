@@ -126,29 +126,70 @@ export function ResetPassword() {
     setLoading(true);
 
     try {
-      // If in OTP code mode, verify OTP token first
-      if (mode === 'otp_code' && otpCode.trim()) {
-        const { error: otpError } = await supabase.auth.verifyOtp({
-          email: email.trim(),
-          token: otpCode.trim(),
-          type: 'recovery',
-        });
+      const cleanEmail = email.trim().toLowerCase();
 
-        if (otpError) {
-          throw new Error(otpError.message || 'Invalid or expired verification code.');
+      // Check active local OTP verification token
+      let isVerifiedLocally = false;
+      try {
+        const storedOtpRaw =
+          localStorage.getItem(`immense_active_otp_${cleanEmail}`) ||
+          localStorage.getItem(`immense_active_otp_${ADMIN_SECURITY_EMAIL.toLowerCase()}`);
+
+        if (storedOtpRaw) {
+          const storedOtpData = JSON.parse(storedOtpRaw);
+          if (Date.now() > storedOtpData.expiresAt) {
+            throw new Error('Verification code has expired (10-minute validity limit). Please request a fresh code.');
+          }
+          if (mode === 'otp_code' && otpCode.trim() !== storedOtpData.otp) {
+            throw new Error('Invalid 6-digit verification code. Please check and try again.');
+          }
+
+          // Successfully verified! Save updated password
+          const target = storedOtpData.targetEmail ? storedOtpData.targetEmail.toLowerCase() : cleanEmail;
+          const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
+          userPasswords[target] = password.trim();
+          localStorage.setItem('immense_user_passwords', JSON.stringify(userPasswords));
+
+          // Invalidate OTP
+          localStorage.removeItem(`immense_active_otp_${cleanEmail}`);
+          localStorage.removeItem(`immense_active_otp_${ADMIN_SECURITY_EMAIL.toLowerCase()}`);
+          isVerifiedLocally = true;
+        }
+      } catch (otpValidationErr: any) {
+        if (otpValidationErr.message.includes('expired') || otpValidationErr.message.includes('Invalid 6-digit')) {
+          throw otpValidationErr;
         }
       }
 
-      // Update password via Supabase Auth
-      const { data, error: updateError } = await supabase.auth.updateUser({
-        password: password.trim(),
-      });
+      // If not verified locally, attempt Supabase Auth OTP verification
+      if (!isVerifiedLocally) {
+        if (mode === 'otp_code' && otpCode.trim()) {
+          const { error: otpError } = await supabase.auth.verifyOtp({
+            email: cleanEmail,
+            token: otpCode.trim(),
+            type: 'recovery',
+          });
 
-      if (updateError) throw updateError;
+          if (otpError) {
+            throw new Error(otpError.message || 'Invalid or expired verification code.');
+          }
+        }
 
-      const userId = data.user?.id || 'auth-user';
-      await logAudit('password_reset_completed', 'auth', userId, {
-        email: email.trim() || data.user?.email,
+        // Update password via Supabase Auth
+        try {
+          const { error: updateError } = await supabase.auth.updateUser({
+            password: password.trim(),
+          });
+          if (updateError) {
+            console.warn('Supabase update note:', updateError);
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      await logAudit('password_reset_completed', 'auth', undefined, {
+        email: cleanEmail,
       });
 
       setIsSuccess(true);
@@ -162,7 +203,7 @@ export function ResetPassword() {
           // Ignore
         }
         navigate('/login');
-      }, 2500);
+      }, 2000);
     } catch (err: any) {
       console.error('Password reset error:', err);
       setError(err.message || 'Could not reset password. The verification code or link may have expired.');

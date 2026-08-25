@@ -294,24 +294,90 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
-    if (!isValidCorporateEmail(email)) {
+    const cleanEmail = email.trim().toLowerCase();
+    if (!isValidCorporateEmail(cleanEmail)) {
       return {
         error: `Only corporate email addresses (@${ALLOWED_EMAIL_DOMAIN}) are allowed.`,
       };
     }
 
-    // Direct password check for local admin testing
+    // 1. Check custom updated user passwords store
+    try {
+      const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
+      if (userPasswords[cleanEmail]) {
+        if (userPasswords[cleanEmail] === password) {
+          // Identify role from custom profiles or demo users
+          let userRole: UserRole = 'employee';
+          let userProfile: Profile | null = null;
+
+          const localProfiles = JSON.parse(localStorage.getItem('immense_custom_profiles') || '[]');
+          const found = localProfiles.find((p: any) => p.corporate_email.toLowerCase() === cleanEmail);
+          if (found) {
+            userRole = found.role;
+            userProfile = found;
+          } else {
+            const demoKey = Object.keys(DEMO_USERS).find(
+              (k) => DEMO_USERS[k as UserRole].email.toLowerCase() === cleanEmail
+            ) as UserRole | undefined;
+            if (demoKey) {
+              userRole = demoKey;
+              userProfile = DEMO_USERS[demoKey].profile;
+            }
+          }
+
+          if (userProfile && !userProfile.is_active) {
+            return {
+              error: 'Your account has been deactivated. Please contact your administrator.',
+            };
+          }
+
+          if (userProfile) {
+            const updatedProfile = { ...userProfile, last_login: new Date().toISOString() };
+            setUser({
+              id: updatedProfile.id,
+              app_metadata: {},
+              user_metadata: { full_name: updatedProfile.full_name },
+              aud: 'authenticated',
+              created_at: updatedProfile.created_at,
+              email: cleanEmail,
+            } as any);
+            setProfile(updatedProfile);
+            setLoading(false);
+            try {
+              localStorage.setItem('immense_demo_user', JSON.stringify({ id: updatedProfile.id, email: cleanEmail }));
+              localStorage.setItem('immense_demo_profile', JSON.stringify(updatedProfile));
+            } catch {
+              // Ignore
+            }
+            await logAudit('login', 'auth', updatedProfile.id, { email: cleanEmail });
+            return { error: null };
+          }
+        } else {
+          return {
+            error: 'Invalid email or password. Please check your credentials and try again.',
+          };
+        }
+      }
+    } catch {
+      // Ignore
+    }
+
+    // 2. Default credentials for demo accounts (when not overridden by password reset)
+    const demoKey = Object.keys(DEMO_USERS).find(
+      (k) => DEMO_USERS[k as UserRole].email.toLowerCase() === cleanEmail
+    ) as UserRole | undefined;
+
     if (
-      email.toLowerCase() === `support@${ALLOWED_EMAIL_DOMAIN}`.toLowerCase() &&
+      demoKey &&
       (password === 'Admin@Immense2026!' || password === 'password123' || password === 'immense123')
     ) {
-      loginAsDemo('super_admin');
+      loginAsDemo(demoKey);
       return { error: null };
     }
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
-        email,
+        email: cleanEmail,
         password,
       });
 

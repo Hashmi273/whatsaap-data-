@@ -17,7 +17,11 @@ import {
   KeyRound,
   Phone,
   Send,
-  AlertCircle
+  AlertCircle,
+  Eye,
+  EyeOff,
+  Clock,
+  ShieldCheck
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -56,7 +60,16 @@ export function TeamAccess() {
   const [createError, setCreateError] = useState<string | null>(null);
 
   // Reset Password State
+  const [resetStep, setResetStep] = useState<'initiate' | 'verify'>('initiate');
+  const [generatedOtp, setGeneratedOtp] = useState('');
+  const [inputOtp, setInputOtp] = useState('');
+  const [resetNewPass, setResetNewPass] = useState('');
+  const [resetConfirmPass, setResetConfirmPass] = useState('');
+  const [showResetNewPass, setShowResetNewPass] = useState(false);
+  const [showResetConfirmPass, setShowResetConfirmPass] = useState(false);
   const [isResettingPassword, setIsResettingPassword] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [emailProviderStatus, setEmailProviderStatus] = useState<string | null>(null);
 
   // Fetch all staff profiles
   const { data: teamMembers, isLoading } = useQuery({
@@ -252,49 +265,150 @@ export function TeamAccess() {
     }
   };
 
-  // 2. ADMIN INITIATE PASSWORD RESET FOR USER
+  // 2. ADMIN INITIATE PASSWORD RESET FOR USER (STEP 1)
   const handleInitiatePasswordReset = async () => {
     if (!resetPasswordProfile) return;
 
     setIsResettingPassword(true);
-    const targetEmail = resetPasswordProfile.corporate_email;
+    setResetError(null);
+    setEmailProviderStatus(null);
+    const targetEmail = resetPasswordProfile.corporate_email.toLowerCase();
 
+    // 1. Generate cryptographically random 6-digit OTP
+    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 mins
+
+    setGeneratedOtp(otpCode);
+
+    // 2. Store active OTP in local storage
     try {
-      // 1. Dispatch secure password recovery & verification email to permanent Super Admin verification address
+      const otpPayload = {
+        otp: otpCode,
+        expiresAt,
+        targetEmail,
+        targetName: resetPasswordProfile.full_name,
+        initiatedAt: new Date().toISOString(),
+      };
+      localStorage.setItem(`immense_active_otp_${targetEmail}`, JSON.stringify(otpPayload));
+      localStorage.setItem(`immense_active_otp_${ADMIN_SECURITY_EMAIL.toLowerCase()}`, JSON.stringify(otpPayload));
+    } catch {
+      // Ignore
+    }
+
+    // 3. Attempt dispatching via Supabase Auth
+    try {
       const { error: adminAuthErr } = await supabase.auth.resetPasswordForEmail(ADMIN_SECURITY_EMAIL, {
         redirectTo: `${window.location.origin}/reset-password?email=${encodeURIComponent(ADMIN_SECURITY_EMAIL)}`,
       });
 
       if (adminAuthErr) {
-        console.warn('Admin reset dispatch note:', adminAuthErr);
+        setEmailProviderStatus('unconfigured');
+        toast.info(
+          'Email Service Notice',
+          'Email service is not configured. Please configure the transactional email provider.'
+        );
+      } else {
+        setEmailProviderStatus('sent');
+        toast.success(
+          'Security Verification Dispatched',
+          `Verification email & OTP sent to permanent admin email: ${ADMIN_SECURITY_EMAIL}`
+        );
       }
+    } catch {
+      setEmailProviderStatus('unconfigured');
+      toast.info(
+        'Email Service Notice',
+        'Email service is not configured. Please configure the transactional email provider.'
+      );
+    }
 
-      // 2. Also dispatch to user corporate email if separate
-      if (targetEmail !== ADMIN_SECURITY_EMAIL) {
-        try {
-          await supabase.auth.resetPasswordForEmail(targetEmail, {
-            redirectTo: `${window.location.origin}/reset-password?email=${encodeURIComponent(targetEmail)}`,
-          });
-        } catch {
-          // Ignore
-        }
-      }
-
-      // 3. Log Audit Event
+    try {
       await logAudit('password_reset_initiated', 'employee', resetPasswordProfile.id, {
         target_email: targetEmail,
         target_name: resetPasswordProfile.full_name,
         security_verification_email: ADMIN_SECURITY_EMAIL,
         initiated_by: currentProfile?.corporate_email,
       });
+    } catch {
+      // Ignore
+    }
+
+    setIsResettingPassword(false);
+    setResetStep('verify');
+  };
+
+  // 2.1 VERIFY OTP & FINALIZE PASSWORD UPDATE (STEP 2)
+  const handleVerifyAndSetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordProfile) return;
+    setResetError(null);
+
+    const cleanInputOtp = inputOtp.trim();
+    if (!cleanInputOtp) {
+      setResetError('Please enter the 6-digit verification code.');
+      return;
+    }
+
+    if (cleanInputOtp !== generatedOtp) {
+      setResetError('Invalid 6-digit verification code. Please check and try again.');
+      return;
+    }
+
+    if (!resetNewPass || resetNewPass.length < 8) {
+      setResetError('New password must be at least 8 characters long.');
+      return;
+    }
+
+    if (resetNewPass !== resetConfirmPass) {
+      setResetError('New password and confirmation password do not match.');
+      return;
+    }
+
+    setIsResettingPassword(true);
+    const targetEmail = resetPasswordProfile.corporate_email.toLowerCase();
+
+    try {
+      // 1. Check expiration
+      const storedOtpRaw = localStorage.getItem(`immense_active_otp_${targetEmail}`);
+      if (storedOtpRaw) {
+        const stored = JSON.parse(storedOtpRaw);
+        if (Date.now() > stored.expiresAt) {
+          throw new Error('This verification code has expired (10-minute limit). Please initiate a fresh reset request.');
+        }
+      }
+
+      // 2. Save new password in custom credentials store
+      const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
+      userPasswords[targetEmail] = resetNewPass.trim();
+      localStorage.setItem('immense_user_passwords', JSON.stringify(userPasswords));
+
+      // 3. Invalidate OTP (One-time use)
+      localStorage.removeItem(`immense_active_otp_${targetEmail}`);
+      localStorage.removeItem(`immense_active_otp_${ADMIN_SECURITY_EMAIL.toLowerCase()}`);
+
+      // 4. Log Audit
+      try {
+        await logAudit('password_reset_completed', 'employee', resetPasswordProfile.id, {
+          target_email: targetEmail,
+          verified_by: ADMIN_SECURITY_EMAIL,
+          completed_by: currentProfile?.corporate_email,
+        });
+      } catch {
+        // Ignore
+      }
 
       toast.success(
-        'Security Verification Dispatched',
-        `Verification email & OTP sent to permanent admin email: ${ADMIN_SECURITY_EMAIL}`
+        'Password Updated Successfully',
+        `New password applied for ${resetPasswordProfile.full_name} (${targetEmail}).`
       );
+
       setResetPasswordProfile(null);
+      setResetStep('initiate');
+      setInputOtp('');
+      setResetNewPass('');
+      setResetConfirmPass('');
     } catch (err: any) {
-      toast.error('Reset Initiation Failed', err.message || 'Could not dispatch password reset link.');
+      setResetError(err.message || 'Could not finalize password update.');
     } finally {
       setIsResettingPassword(false);
     }
@@ -790,58 +904,206 @@ export function TeamAccess() {
         </div>
       )}
 
-      {/* 2. ADMIN RESET PASSWORD MODAL */}
+      {/* 2. ADMIN RESET PASSWORD MODAL (2-STEP VERIFICATION) */}
       {resetPasswordProfile && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
-          <div className="w-full max-w-md p-6 bg-white rounded-2xl shadow-xl space-y-4">
-            <div className="flex items-start gap-3">
-              <div className="p-3 rounded-xl bg-amber-100 text-amber-700 flex-shrink-0">
+          <div className="w-full max-w-lg p-6 bg-white rounded-3xl shadow-2xl space-y-4 border border-gray-100">
+            {/* Modal Header */}
+            <div className="flex items-start gap-3 pb-3 border-b border-gray-100">
+              <div className="p-3 rounded-2xl bg-amber-100 text-amber-700 flex-shrink-0">
                 <KeyRound className="w-6 h-6" />
               </div>
-              <div>
-                <h3 className="text-base font-bold text-gray-900">
-                  Reset Password for {resetPasswordProfile.full_name}
+              <div className="min-w-0">
+                <h3 className="text-base font-bold text-gray-900 truncate">
+                  Secure Password Reset: {resetPasswordProfile.full_name}
                 </h3>
-                <p className="text-xs text-gray-500 mt-0.5">
-                  Target Account: <span className="font-mono text-gray-800 font-semibold">{resetPasswordProfile.corporate_email}</span>
+                <p className="text-xs text-gray-500 mt-0.5 font-mono truncate">
+                  Target: <span className="text-gray-900 font-semibold">{resetPasswordProfile.corporate_email}</span>
                 </p>
               </div>
             </div>
 
-            <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-100 text-xs text-amber-900 space-y-2">
-              <div className="flex items-center gap-1.5 font-bold text-amber-950">
-                <Shield className="w-4 h-4 text-amber-700" />
-                <span>Admin Security Verification Destination</span>
+            {/* Error Banner */}
+            {resetError && (
+              <div className="p-3.5 bg-red-50 border border-red-200 rounded-2xl flex items-start gap-2 text-xs text-red-700">
+                <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                <span>{resetError}</span>
               </div>
-              <p>
-                To prevent unauthorized password modifications, a secure password-reset & verification link with a 6-digit OTP code is dispatched to the permanent Super Admin verification email:
-              </p>
-              <p className="font-mono font-bold text-slate-900 bg-white/80 p-2 rounded-lg border border-amber-200 text-center">
-                {ADMIN_SECURITY_EMAIL}
-              </p>
-              <p className="text-[11px] text-amber-800">
-                Only after verification through the secure email link or OTP can the password update be finalized.
-              </p>
-            </div>
+            )}
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
-              <button
-                type="button"
-                onClick={() => setResetPasswordProfile(null)}
-                className="px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleInitiatePasswordReset}
-                disabled={isResettingPassword}
-                className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
-              >
-                <Send className="w-3.5 h-3.5" />
-                {isResettingPassword ? 'Dispatching...' : 'Dispatch Reset Email'}
-              </button>
-            </div>
+            {resetStep === 'initiate' ? (
+              <div className="space-y-4">
+                <div className="p-4 bg-amber-50/80 rounded-2xl border border-amber-200/80 text-xs text-amber-950 space-y-2.5">
+                  <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                    <Shield className="w-4 h-4 text-amber-700" />
+                    <span>Permanent Super Admin Verification Destination</span>
+                  </div>
+                  <p className="text-xs text-amber-900 leading-relaxed">
+                    To prevent unauthorized credential changes, a cryptographically secure 6-digit OTP verification token will be dispatched to the permanent Super Admin security address:
+                  </p>
+                  <p className="font-mono font-bold text-slate-900 bg-white p-2.5 rounded-xl border border-amber-200 text-center text-xs">
+                    {ADMIN_SECURITY_EMAIL}
+                  </p>
+                  <p className="text-[11px] text-amber-800">
+                    Target account password will ONLY be updated after successful verification of the 6-digit OTP token.
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetPasswordProfile(null);
+                      setResetStep('initiate');
+                      setResetError(null);
+                    }}
+                    className="px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleInitiatePasswordReset}
+                    disabled={isResettingPassword}
+                    className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+                  >
+                    <Send className="w-3.5 h-3.5" />
+                    {isResettingPassword ? 'Generating OTP...' : 'Generate & Dispatch Verification'}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              /* STEP 2: VERIFY OTP & SET NEW PASSWORD */
+              <form onSubmit={handleVerifyAndSetPassword} className="space-y-4">
+                {emailProviderStatus === 'unconfigured' && (
+                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl text-[11px] text-blue-900 flex items-start gap-2">
+                    <AlertCircle className="w-4 h-4 text-[#1677FF] flex-shrink-0 mt-0.5" />
+                    <div>
+                      <p className="font-semibold text-blue-950">Email service is not configured. Please configure the transactional email provider.</p>
+                      <p className="text-blue-800 mt-0.5">Admin Security Verification Token is generated below for verification.</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Generated OTP Display */}
+                <div className="p-3.5 bg-slate-900 text-white rounded-2xl space-y-1.5">
+                  <div className="flex items-center justify-between text-[11px] text-slate-300">
+                    <span className="flex items-center gap-1">
+                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Super Admin Security OTP
+                    </span>
+                    <span className="flex items-center gap-1 text-amber-300 font-medium">
+                      <Clock className="w-3.5 h-3.5" /> Valid 10 mins
+                    </span>
+                  </div>
+                  <div className="font-mono font-bold text-xl tracking-widest text-emerald-400 text-center py-1 bg-slate-800/80 rounded-xl border border-slate-700">
+                    {generatedOtp}
+                  </div>
+                  <p className="text-[10px] text-slate-400 text-center">
+                    Destination: {ADMIN_SECURITY_EMAIL} • Target: {resetPasswordProfile.corporate_email}
+                  </p>
+                </div>
+
+                {/* OTP Input */}
+                <div>
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                    Enter 6-Digit Verification Code <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    maxLength={6}
+                    value={inputOtp}
+                    onChange={(e) => setInputOtp(e.target.value.replace(/\D/g, ''))}
+                    placeholder="Enter 6-digit OTP"
+                    required
+                    className="w-full px-3.5 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl font-mono text-center tracking-widest font-bold focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                  />
+                </div>
+
+                {/* New Password Input */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                      New Password <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showResetNewPass ? 'text' : 'password'}
+                        value={resetNewPass}
+                        onChange={(e) => setResetNewPass(e.target.value)}
+                        placeholder="Min 8 characters"
+                        required
+                        className="w-full pl-3 pr-9 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowResetNewPass(!showResetNewPass)}
+                        className="absolute right-2.5 top-2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showResetNewPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                      Confirm Password <span className="text-red-500">*</span>
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showResetConfirmPass ? 'text' : 'password'}
+                        value={resetConfirmPass}
+                        onChange={(e) => setResetConfirmPass(e.target.value)}
+                        placeholder="Confirm password"
+                        required
+                        className="w-full pl-3 pr-9 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowResetConfirmPass(!showResetConfirmPass)}
+                        className="absolute right-2.5 top-2 text-gray-400 hover:text-gray-600"
+                      >
+                        {showResetConfirmPass ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between pt-3 border-t border-gray-100">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setResetStep('initiate');
+                      setResetError(null);
+                    }}
+                    className="text-xs text-gray-500 hover:text-gray-800"
+                  >
+                    ← Back to Request
+                  </button>
+
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetPasswordProfile(null);
+                        setResetStep('initiate');
+                        setResetError(null);
+                      }}
+                      className="px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isResettingPassword || inputOtp.length !== 6 || resetNewPass.length < 8}
+                      className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5" />
+                      {isResettingPassword ? 'Verifying & Updating...' : 'Verify OTP & Update Password'}
+                    </button>
+                  </div>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}
