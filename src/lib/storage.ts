@@ -8,7 +8,7 @@ export async function uploadDocumentToStorage(
   storagePath: string,
   file: File,
   bucket: string = 'onboarding-documents'
-): Promise<boolean> {
+): Promise<{ success: boolean; error?: string }> {
   const cleanPath = storagePath.startsWith('/') ? storagePath.slice(1) : storagePath;
 
   // 1. Attempt upload via Supabase JS client
@@ -19,7 +19,7 @@ export async function uploadDocumentToStorage(
     });
 
     if (!error && data?.path) {
-      return true;
+      return { success: true };
     }
   } catch (clientErr) {
     console.warn('Client-side storage upload note:', clientErr);
@@ -57,15 +57,16 @@ export async function uploadDocumentToStorage(
       }),
     });
 
-    if (res.ok) {
-      return true;
+    const resData = await res.json().catch(() => ({}));
+    if (res.ok && resData.success) {
+      return { success: true };
     } else {
-      const errJson = await res.json().catch(() => ({}));
-      console.error('Serverless upload returned error:', errJson);
+      const errorMsg = resData.error || `Server upload rejected (HTTP ${res.status})`;
+      console.error('Serverless upload returned error:', errorMsg);
+      return { success: false, error: errorMsg };
     }
-  } catch (serverErr) {
+  } catch (serverErr: any) {
     console.error('Serverless storage upload fallback error:', serverErr);
+    return { success: false, error: serverErr.message || 'Network error during document upload.' };
   }
-
-  return false;
 }

@@ -143,9 +143,9 @@ export function RcsForm() {
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
       // 1. Upload to Supabase Storage (Client + Serverless fallback)
-      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
-      if (!uploadSuccess) {
-        throw new Error(`Failed to upload ${file.name} to storage.`);
+      const uploadResult = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || `Failed to upload ${file.name} to storage.`);
       }
 
       const docPayload: any = {

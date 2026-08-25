@@ -31,6 +31,12 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     let body: any = {};
     if (typeof req.body === 'object' && req.body !== null) {
       body = req.body;
+    } else if (typeof req.body === 'string' && req.body.trim()) {
+      try {
+        body = JSON.parse(req.body);
+      } catch {
+        body = {};
+      }
     } else {
       const rawBody = await new Promise<string>((resolve, reject) => {
         let data = '';
@@ -38,7 +44,11 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         req.on('end', () => resolve(data));
         req.on('error', reject);
       });
-      body = JSON.parse(rawBody || '{}');
+      try {
+        body = JSON.parse(rawBody || '{}');
+      } catch {
+        body = {};
+      }
     }
 
     const { path: storagePath, bucket = 'onboarding-documents', fileBase64, contentType = 'application/octet-stream' } = body;

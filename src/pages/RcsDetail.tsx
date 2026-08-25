@@ -196,9 +196,9 @@ export function RcsDetail() {
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
       // 1. Upload to Supabase Storage (Client + Serverless fallback)
-      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
-      if (!uploadSuccess) {
-        throw new Error('Physical storage upload failed — document could not be vaulted.');
+      const uploadResult = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Physical storage upload failed — document could not be vaulted.');
       }
 
       // 2. Metadata Insert / Replace ONLY after storage succeeds

@@ -388,9 +388,9 @@ export function OnboardingDetail() {
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
       // 1. Upload to Supabase Storage (Client + Serverless fallback)
-      const uploadSuccess = await uploadDocumentToStorage(storagePath, selectedFile, 'onboarding-documents');
-      if (!uploadSuccess) {
-        throw new Error('Storage upload failed — physical object could not be vaulted.');
+      const uploadResult = await uploadDocumentToStorage(storagePath, selectedFile, 'onboarding-documents');
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Storage upload failed — physical object could not be vaulted.');
       }
 
       // 2. Insert metadata record in onboarding_documents ONLY after storage succeeded
@@ -569,9 +569,9 @@ export function OnboardingDetail() {
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
       // 1. Upload to Supabase Storage (Client + Serverless fallback)
-      const uploadSuccess = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
-      if (!uploadSuccess) {
-        throw new Error('Storage upload failed — replacement file could not be stored.');
+      const uploadResult = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Storage upload failed — replacement file could not be stored.');
       }
 
       const docPayload: any = {
