@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Lock,
   Eye,
@@ -7,7 +7,11 @@ import {
   CheckCircle2,
   AlertCircle,
   ShieldCheck,
-  ArrowRight
+  ArrowRight,
+  Mail,
+  KeyRound,
+  RefreshCw,
+  Send
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { logAudit } from '@/lib/audit';
@@ -16,26 +20,46 @@ import { APP_NAME, APP_SUBTITLE } from '@/lib/constants';
 
 export function ResetPassword() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const toast = useToast();
 
+  const initialEmail = searchParams.get('email') || '';
+  const [email, setEmail] = useState(initialEmail);
+  const [otpCode, setOtpCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [resending, setResending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [isSuccess, setIsSuccess] = useState(false);
 
-  // Check URL hash for error parameters from Supabase
+  // Tab mode: 'link_session' (URL token active) vs 'otp_code' (interactive 6-digit OTP)
+  const [mode, setMode] = useState<'link_session' | 'otp_code'>('otp_code');
+
+  // Check URL hash / code for error parameters or active session from Supabase
   useEffect(() => {
     const hash = window.location.hash;
-    if (hash && hash.includes('error_description')) {
-      const params = new URLSearchParams(hash.replace('#', '?'));
-      const errDesc = params.get('error_description');
-      if (errDesc) {
-        setError(decodeURIComponent(errDesc.replace(/\+/g, ' ')));
+    if (hash) {
+      if (hash.includes('error_description')) {
+        const params = new URLSearchParams(hash.replace('#', '?'));
+        const errDesc = params.get('error_description');
+        if (errDesc) {
+          setError(decodeURIComponent(errDesc.replace(/\+/g, ' ')));
+        }
+      }
+      if (hash.includes('access_token') || hash.includes('type=recovery')) {
+        setMode('link_session');
       }
     }
+
+    // Check if Supabase session is already present
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) {
+        setMode('link_session');
+      }
+    });
   }, []);
 
   const validateStrength = (pass: string) => {
@@ -50,6 +74,36 @@ export function ResetPassword() {
   const strength = validateStrength(password);
   const isStrong = strength.minLength && strength.hasNumber && strength.hasLetter;
 
+  // Handle Resending OTP / Recovery Email
+  const handleResendOtp = async () => {
+    if (!email.trim()) {
+      setError('Please enter your registered email address.');
+      return;
+    }
+    setResending(true);
+    setError(null);
+    try {
+      const { error: resetErr } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
+
+      if (resetErr) {
+        console.warn('Reset note:', resetErr);
+      }
+
+      await logAudit('password_reset_requested', 'auth', undefined, {
+        email: email.trim(),
+      });
+
+      toast.success('Verification Code Dispatched', `Password reset verification sent to ${email.trim()}.`);
+    } catch (err: any) {
+      setError(err.message || 'Could not send verification code.');
+    } finally {
+      setResending(false);
+    }
+  };
+
+  // Handle Submit
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -72,7 +126,20 @@ export function ResetPassword() {
     setLoading(true);
 
     try {
-      // Update password via Supabase GoTrue Auth
+      // If in OTP code mode, verify OTP token first
+      if (mode === 'otp_code' && otpCode.trim()) {
+        const { error: otpError } = await supabase.auth.verifyOtp({
+          email: email.trim(),
+          token: otpCode.trim(),
+          type: 'recovery',
+        });
+
+        if (otpError) {
+          throw new Error(otpError.message || 'Invalid or expired verification code.');
+        }
+      }
+
+      // Update password via Supabase Auth
       const { data, error: updateError } = await supabase.auth.updateUser({
         password: password.trim(),
       });
@@ -81,13 +148,13 @@ export function ResetPassword() {
 
       const userId = data.user?.id || 'auth-user';
       await logAudit('password_reset_completed', 'auth', userId, {
-        email: data.user?.email,
+        email: email.trim() || data.user?.email,
       });
 
       setIsSuccess(true);
       toast.success('Password Updated', 'Your password has been securely reset.');
 
-      // Sign out from any temporary reset session and redirect to login
+      // Sign out and redirect to login
       setTimeout(async () => {
         try {
           await supabase.auth.signOut();
@@ -98,7 +165,7 @@ export function ResetPassword() {
       }, 2500);
     } catch (err: any) {
       console.error('Password reset error:', err);
-      setError(err.message || 'Could not reset password. The link may have expired.');
+      setError(err.message || 'Could not reset password. The verification code or link may have expired.');
     } finally {
       setLoading(false);
     }
@@ -130,7 +197,7 @@ export function ResetPassword() {
         <p className="mt-2 text-center text-xs text-slate-400">
           {isSuccess
             ? 'Redirecting to login portal...'
-            : 'Enter and confirm your new corporate account password'}
+            : 'Verify your email code or reset link and set your new password'}
         </p>
       </div>
 
@@ -147,7 +214,7 @@ export function ResetPassword() {
               </p>
               <button
                 onClick={() => navigate('/login')}
-                className="w-full py-2.5 px-4 rounded-xl bg-[#1677FF] hover:bg-[#0B5FE0] text-white text-xs font-semibold shadow-md transition-all flex items-center justify-center gap-2"
+                className="w-full py-2.5 px-4 rounded-xl bg-[#1677FF] hover:bg-[#0B5FE0] text-white text-xs font-semibold shadow-md transition-all flex items-center justify-center gap-2 cursor-pointer"
               >
                 Go to Sign In <ArrowRight className="w-4 h-4" />
               </button>
@@ -158,6 +225,85 @@ export function ResetPassword() {
                 <div className="p-3.5 rounded-xl bg-red-500/10 border border-red-500/30 flex items-start gap-2.5 text-red-400 text-xs">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <p>{error}</p>
+                </div>
+              )}
+
+              {/* Mode switch helper */}
+              <div className="flex rounded-xl bg-slate-900/60 p-1 border border-slate-700/60 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setMode('otp_code')}
+                  className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                    mode === 'otp_code'
+                      ? 'bg-[#1677FF] text-white shadow-xs'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Verify by Email OTP
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMode('link_session')}
+                  className={`flex-1 py-1.5 rounded-lg font-semibold transition-all ${
+                    mode === 'link_session'
+                      ? 'bg-[#1677FF] text-white shadow-xs'
+                      : 'text-slate-400 hover:text-white'
+                  }`}
+                >
+                  Direct Email Link
+                </button>
+              </div>
+
+              {/* Email & OTP inputs when in OTP Mode */}
+              {mode === 'otp_code' && (
+                <div className="space-y-3 pt-1">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
+                      Registered Email Address
+                    </label>
+                    <div className="relative">
+                      <Mail className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+                      <input
+                        type="email"
+                        value={email}
+                        onChange={(e) => setEmail(e.target.value)}
+                        placeholder="e.g. hashmimdparvej78654@gmail.com"
+                        required
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-900/90 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] transition-all"
+                      />
+                    </div>
+                  </div>
+
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider">
+                        6-Digit Verification Code (OTP)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={handleResendOtp}
+                        disabled={resending || !email}
+                        className="text-[11px] text-blue-400 hover:text-blue-300 disabled:opacity-50 inline-flex items-center gap-1 cursor-pointer"
+                      >
+                        <RefreshCw className={`w-3 h-3 ${resending ? 'animate-spin' : ''}`} />
+                        {resending ? 'Sending...' : 'Send / Resend OTP'}
+                      </button>
+                    </div>
+                    <div className="relative">
+                      <KeyRound className="absolute left-3.5 top-3 w-4 h-4 text-slate-400" />
+                      <input
+                        type="text"
+                        maxLength={8}
+                        value={otpCode}
+                        onChange={(e) => setOtpCode(e.target.value)}
+                        placeholder="123456"
+                        className="w-full pl-10 pr-4 py-2.5 bg-slate-900/90 border border-slate-700 rounded-xl text-white placeholder-slate-500 text-xs tracking-widest font-mono focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] transition-all"
+                      />
+                    </div>
+                    <p className="text-[11px] text-slate-400 mt-1">
+                      Check your email inbox or spam folder for the verification code.
+                    </p>
+                  </div>
                 </div>
               )}
 
@@ -178,7 +324,7 @@ export function ResetPassword() {
                   <button
                     type="button"
                     onClick={() => setShowPassword(!showPassword)}
-                    className="absolute right-3 top-3 text-slate-400 hover:text-slate-200"
+                    className="absolute right-3 top-3 text-slate-400 hover:text-slate-200 cursor-pointer"
                   >
                     {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -239,7 +385,7 @@ export function ResetPassword() {
                   <button
                     type="button"
                     onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                    className="absolute right-3 top-3 text-slate-400 hover:text-slate-200"
+                    className="absolute right-3 top-3 text-slate-400 hover:text-slate-200 cursor-pointer"
                   >
                     {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                   </button>
@@ -259,7 +405,7 @@ export function ResetPassword() {
                 <button
                   type="button"
                   onClick={() => navigate('/login')}
-                  className="text-xs text-slate-400 hover:text-white transition-colors"
+                  className="text-xs text-slate-400 hover:text-white transition-colors cursor-pointer"
                 >
                   Back to Sign In
                 </button>

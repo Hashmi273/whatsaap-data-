@@ -272,48 +272,73 @@ export function Login() {
             </p>
 
             {resetSent ? (
-              <div className="mt-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-center">
-                <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto mb-2" />
-                <p className="text-sm font-semibold text-emerald-900">Reset Link Sent</p>
-                <p className="text-xs text-emerald-700 mt-1">
-                  Check your corporate inbox for instructions.
-                </p>
-                <button
-                  onClick={() => setForgotPasswordOpen(false)}
-                  className="mt-4 px-4 py-2 text-xs font-semibold text-white bg-emerald-600 rounded-lg"
-                >
-                  Back to Sign In
-                </button>
+              <div className="mt-6 p-4 rounded-xl bg-emerald-50 border border-emerald-200 text-center space-y-3">
+                <CheckCircle2 className="w-8 h-8 text-emerald-600 mx-auto" />
+                <div>
+                  <p className="text-sm font-semibold text-emerald-900">Recovery Verification Sent</p>
+                  <p className="text-xs text-emerald-700 mt-1">
+                    Check <span className="font-mono font-bold">{resetEmail}</span> for the recovery link or 6-digit verification code.
+                  </p>
+                </div>
+                <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                  <button
+                    onClick={() => {
+                      setForgotPasswordOpen(false);
+                      navigate(`/reset-password?email=${encodeURIComponent(resetEmail)}`);
+                    }}
+                    className="flex-1 py-2 px-3 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all cursor-pointer"
+                  >
+                    Enter 6-Digit OTP Code
+                  </button>
+                  <button
+                    onClick={() => setForgotPasswordOpen(false)}
+                    className="flex-1 py-2 px-3 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-all cursor-pointer"
+                  >
+                    Back to Sign In
+                  </button>
+                </div>
               </div>
             ) : (
               <form onSubmit={handleResetPassword} className="mt-4 space-y-4">
                 <div>
-                  <label className="block text-xs font-medium text-gray-700 mb-1">
-                    Corporate Email
+                  <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                    Registered Account Email
                   </label>
                   <input
                     type="email"
                     required
                     value={resetEmail}
                     onChange={(e) => setResetEmail(e.target.value)}
-                    placeholder={`support@${ALLOWED_EMAIL_DOMAIN}`}
-                    className="w-full px-3.5 py-2 text-sm bg-gray-50 border border-gray-200 rounded-lg focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                    placeholder="e.g. hashmimdparvej78654@gmail.com"
+                    className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                   />
                 </div>
-                <div className="flex items-center justify-end gap-2 pt-2">
+                <div className="flex items-center justify-between pt-2">
                   <button
                     type="button"
-                    onClick={() => setForgotPasswordOpen(false)}
-                    className="px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-lg"
+                    onClick={() => {
+                      setForgotPasswordOpen(false);
+                      navigate(`/reset-password?email=${encodeURIComponent(resetEmail)}`);
+                    }}
+                    className="text-xs text-[#1677FF] hover:underline font-medium cursor-pointer"
                   >
-                    Cancel
+                    Enter OTP Code Directly
                   </button>
-                  <button
-                    type="submit"
-                    className="px-4 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-lg"
-                  >
-                    Send Recovery Link
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setForgotPasswordOpen(false)}
+                      className="px-3.5 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-xl cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      className="px-4 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all cursor-pointer"
+                    >
+                      Send Verification
+                    </button>
+                  </div>
                 </div>
               </form>
             )}
