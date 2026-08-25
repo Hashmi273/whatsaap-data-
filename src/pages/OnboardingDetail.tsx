@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -26,7 +26,8 @@ import {
   FileSpreadsheet,
   FileImage,
   ScrollText,
-  UserCheck
+  UserCheck,
+  RefreshCw
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
@@ -75,10 +76,12 @@ export function OnboardingDetail() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isUploading, setIsUploading] = useState(false);
 
-  // Document Preview / Delete state
+  // Document Preview / Delete / Replace state
   const [previewDoc, setPreviewDoc] = useState<OnboardingDocument | null>(null);
   const [previewSignedUrl, setPreviewSignedUrl] = useState<string | null>(null);
   const [deleteDoc, setDeleteDoc] = useState<OnboardingDocument | null>(null);
+  const [replaceTargetDoc, setReplaceTargetDoc] = useState<OnboardingDocument | null>(null);
+  const replaceDocInputRef = useRef<HTMLInputElement>(null);
 
   // Reassignment state
   const [reassignModalOpen, setReassignModalOpen] = useState(false);
@@ -605,6 +608,95 @@ export function OnboardingDetail() {
     }
   };
 
+  // Replace Document
+  const handleReplaceFile = async (file: File, docToReplace: OnboardingDocument) => {
+    if (!id) return;
+    try {
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
+      const storagePath = `${id}/${docToReplace.category}/${uniqueFileName}`;
+      const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
+
+      try {
+        await supabase.storage.from('onboarding-documents').upload(storagePath, file, {
+          cacheControl: '3600',
+          upsert: true,
+        });
+      } catch (storageErr) {
+        console.warn('Storage upload note:', storageErr);
+      }
+
+      const docPayload: any = {
+        onboarding_id: id,
+        file_name: file.name,
+        original_name: file.name,
+        category: docToReplace.category,
+        storage_path: storagePath,
+        mime_type: file.type || 'application/octet-stream',
+        file_size: file.size,
+      };
+
+      if (uploaderId) {
+        docPayload.uploaded_by = uploaderId;
+      }
+
+      try {
+        await supabase.from('onboarding_documents').insert(docPayload);
+      } catch (metaErr) {
+        console.warn('Metadata insert note:', metaErr);
+      }
+
+      let blobUrl = '';
+      try {
+        blobUrl = URL.createObjectURL(file);
+      } catch {
+        // Ignore
+      }
+
+      const newDocItem: any = {
+        id: `doc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+        ...docPayload,
+        created_at: new Date().toISOString(),
+        localPreviewUrl: blobUrl,
+        uploader_profile: {
+          id: profile?.id || 'immense-admin-001',
+          full_name: profile?.full_name || 'Immense Super Admin',
+          corporate_email: profile?.corporate_email || 'support@immensesmartsolutions.com',
+        },
+      };
+
+      try {
+        const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
+        const updatedLocal = localDocs.filter((d: any) => d.id !== docToReplace.id);
+        updatedLocal.unshift(newDocItem);
+        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updatedLocal));
+
+        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
+        const updatedGlobal = globalDocs.filter((d: any) => d.id !== docToReplace.id);
+        updatedGlobal.unshift(newDocItem);
+        localStorage.setItem('immense_all_vault_docs', JSON.stringify(updatedGlobal));
+      } catch {
+        // Ignore
+      }
+
+      await logAudit('document_uploaded', 'document', id, {
+        file_name: file.name,
+        category: docToReplace.category,
+        size_bytes: file.size,
+        is_replacement: true,
+      });
+
+      toast.success('Document Updated', `${file.name} replaced ${docToReplace.file_name}.`);
+      setReplaceTargetDoc(null);
+      queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
+      queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+      queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
+      queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
+    } catch (err: any) {
+      toast.error('Replace Failed', err.message || 'Could not update document.');
+    }
+  };
+
   const getDocIcon = (mime: string, name: string) => {
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
       return <FileText className="w-5 h-5 text-red-500" />;
@@ -1100,15 +1192,27 @@ export function OnboardingDetail() {
                           </button>
                           <button
                             onClick={() => handleDownload(doc)}
-                            className="p-1.5 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg"
+                            className="p-1.5 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg cursor-pointer"
                             title="Download Signed Token"
                           >
                             <Download className="w-4 h-4" />
                           </button>
+                          {canEdit && (
+                            <button
+                              onClick={() => {
+                                setReplaceTargetDoc(doc);
+                                replaceDocInputRef.current?.click();
+                              }}
+                              className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
+                              title="Replace / Update Document"
+                            >
+                              <RefreshCw className="w-4 h-4" />
+                            </button>
+                          )}
                           {canDeleteDocs && (
                             <button
                               onClick={() => setDeleteDoc(doc)}
-                              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
                               title="Delete from Vault"
                             >
                               <Trash2 className="w-4 h-4" />
@@ -1122,6 +1226,21 @@ export function OnboardingDetail() {
               </table>
             </div>
           )}
+
+          {/* Hidden Replace File Input */}
+          <input
+            type="file"
+            ref={replaceDocInputRef}
+            accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.doc,application/pdf,image/jpeg,image/png,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              if (file && replaceTargetDoc) {
+                handleReplaceFile(file, replaceTargetDoc);
+              }
+              e.target.value = '';
+            }}
+          />
         </div>
 
         {/* Audit Log Timeline */}

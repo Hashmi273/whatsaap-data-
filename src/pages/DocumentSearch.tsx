@@ -105,12 +105,23 @@ export function DocumentSearch() {
       const matchesSearch =
         !searchLower ||
         doc.file_name.toLowerCase().includes(searchLower) ||
+        (doc.original_name && doc.original_name.toLowerCase().includes(searchLower)) ||
         (doc.onboarding?.brand_name &&
           doc.onboarding.brand_name.toLowerCase().includes(searchLower)) ||
         (doc.onboarding?.company_name &&
           doc.onboarding.company_name.toLowerCase().includes(searchLower)) ||
+        (doc.onboarding?.contact_email &&
+          doc.onboarding.contact_email.toLowerCase().includes(searchLower)) ||
+        (doc.onboarding?.contact_person &&
+          doc.onboarding.contact_person.toLowerCase().includes(searchLower)) ||
+        (doc.onboarding?.login_url &&
+          doc.onboarding.login_url.toLowerCase().includes(searchLower)) ||
+        (doc.onboarding?.notes &&
+          doc.onboarding.notes.toLowerCase().includes(searchLower)) ||
         (doc.uploader_profile?.full_name &&
           doc.uploader_profile.full_name.toLowerCase().includes(searchLower)) ||
+        (doc.uploader_profile?.corporate_email &&
+          doc.uploader_profile.corporate_email.toLowerCase().includes(searchLower)) ||
         formatCategoryLabel(doc.category).toLowerCase().includes(searchLower);
 
       const matchesCategory =
