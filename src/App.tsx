@@ -16,6 +16,7 @@ import { TeamAccess } from '@/pages/TeamAccess';
 import { ActivityLogs } from '@/pages/ActivityLogs';
 import { Profile } from '@/pages/Profile';
 import { Settings } from '@/pages/Settings';
+import { ResetPassword } from '@/pages/ResetPassword';
 
 const queryClient = new QueryClient({
   defaultOptions: {
@@ -34,8 +35,9 @@ export function App() {
         <ToastProvider>
           <BrowserRouter>
             <Routes>
-              {/* Public Route */}
+              {/* Public Routes */}
               <Route path="/login" element={<Login />} />
+              <Route path="/reset-password" element={<ResetPassword />} />
 
               {/* Protected Authenticated Routes */}
               <Route element={<ProtectedRoute />}>

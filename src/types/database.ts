@@ -24,6 +24,7 @@ export interface Profile {
   corporate_email: string;
   role: UserRole;
   department: string;
+  mobile_number?: string;
   is_active: boolean;
   avatar_url: string | null;
   last_login: string | null;
