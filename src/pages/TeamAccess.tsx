@@ -30,7 +30,7 @@ import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { ROLE_OPTIONS, ROLE_COLORS, formatRoleLabel } from '@/types/database';
 import type { Profile, UserRole, OnboardingRecord } from '@/types/database';
-import { ALLOWED_EMAIL_DOMAIN, ADMIN_SECURITY_EMAIL, isValidUuid } from '@/lib/constants';
+import { ALLOWED_EMAIL_DOMAIN, ADMIN_SECURITY_EMAIL, ADMIN_SECURITY_PHONE, isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 
 export function TeamAccess() {
@@ -275,7 +275,7 @@ export function TeamAccess() {
     const targetEmail = resetPasswordProfile.corporate_email.toLowerCase();
 
     try {
-      // 1. Dispatch real email via serverless backend API
+      // 1. Dispatch real SMS OTP via serverless backend API
       const response = await fetch('/api/send-admin-otp', {
         method: 'POST',
         headers: {
@@ -292,25 +292,25 @@ export function TeamAccess() {
       if (response.ok && result.success) {
         setEmailProviderStatus('sent');
         toast.success(
-          'Verification Email Sent',
-          `Verification email & OTP sent successfully to ${ADMIN_SECURITY_EMAIL}.`
+          'Verification OTP Dispatched',
+          `Verification OTP sent successfully to the Super Admin mobile number (+91 ${ADMIN_SECURITY_PHONE}).`
         );
         setResetStep('verify');
       } else {
         const errorMsg =
           result.error ||
-          'Unable to send verification email. Please check transactional email provider configuration or contact the Super Admin.';
+          'Unable to send verification SMS OTP. Please check SMS provider configuration in Vercel environment variables.';
         setEmailProviderStatus('failed');
         setResetError(errorMsg);
-        toast.error('Email Dispatch Failed', errorMsg);
+        toast.error('SMS Dispatch Failed', errorMsg);
       }
     } catch (err: any) {
       const errorMsg =
         err.message ||
-        'Unable to send verification email. Please check transactional email provider configuration or contact the Super Admin.';
+        'Unable to send verification SMS OTP. Please check SMS provider configuration in Vercel environment variables.';
       setEmailProviderStatus('failed');
       setResetError(errorMsg);
-      toast.error('Email Dispatch Failed', errorMsg);
+      toast.error('SMS Dispatch Failed', errorMsg);
     } finally {
       setIsResettingPassword(false);
     }
@@ -916,16 +916,16 @@ export function TeamAccess() {
                 <div className="p-4 bg-amber-50/80 rounded-2xl border border-amber-200/80 text-xs text-amber-950 space-y-2.5">
                   <div className="flex items-center gap-1.5 font-bold text-amber-950">
                     <Shield className="w-4 h-4 text-amber-700" />
-                    <span>Permanent Super Admin Verification Destination</span>
+                    <span>Permanent Super Admin SMS Verification Destination</span>
                   </div>
                   <p className="text-xs text-amber-900 leading-relaxed">
-                    To prevent unauthorized credential changes, a cryptographically secure 6-digit OTP verification token will be dispatched to the permanent Super Admin security address:
+                    To prevent unauthorized credential changes, a cryptographically secure 6-digit OTP verification token will be dispatched by SMS to the permanent Super Admin registered security phone:
                   </p>
                   <p className="font-mono font-bold text-slate-900 bg-white p-2.5 rounded-xl border border-amber-200 text-center text-xs">
-                    {ADMIN_SECURITY_EMAIL}
+                    +91 {ADMIN_SECURITY_PHONE}
                   </p>
                   <p className="text-[11px] text-amber-800">
-                    Target account password will ONLY be updated after successful verification of the 6-digit OTP token.
+                    Target account password will ONLY be updated after successful verification of the 6-digit SMS OTP token.
                   </p>
                 </div>
 
@@ -948,23 +948,23 @@ export function TeamAccess() {
                     className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    {isResettingPassword ? 'Generating OTP...' : 'Generate & Dispatch Verification'}
+                    {isResettingPassword ? 'Generating OTP...' : 'Generate & Dispatch SMS OTP'}
                   </button>
                 </div>
               </div>
             ) : (
-              /* STEP 2: VERIFY EMAIL OTP & SET NEW PASSWORD */
+              /* STEP 2: VERIFY SMS OTP & SET NEW PASSWORD */
               <form onSubmit={handleVerifyAndSetPassword} className="space-y-4">
                 <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-2xl space-y-1 text-xs text-emerald-950">
                   <div className="flex items-center gap-1.5 font-bold text-emerald-900">
                     <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <span>Real Email Verification Dispatched</span>
+                    <span>Real SMS OTP Verification Dispatched</span>
                   </div>
                   <p className="text-[11px] text-emerald-800 leading-relaxed">
-                    A secure 6-digit verification code has been dispatched to the permanent Super Admin inbox:
+                    A secure 6-digit verification code has been dispatched via SMS to the permanent Super Admin number:
                   </p>
                   <p className="font-mono font-bold text-emerald-950 bg-white/90 p-1.5 rounded-lg border border-emerald-200 text-center text-xs">
-                    {ADMIN_SECURITY_EMAIL}
+                    +91 {ADMIN_SECURITY_PHONE}
                   </p>
                   <p className="text-[10px] text-emerald-700 flex items-center justify-center gap-1 mt-1">
                     <Clock className="w-3 h-3" /> Valid for 10 minutes • One-time use
@@ -974,14 +974,14 @@ export function TeamAccess() {
                 {/* OTP Input */}
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                    Enter 6-Digit Email OTP Code <span className="text-red-500">*</span>
+                    Enter 6-Digit SMS OTP Code <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
                     maxLength={6}
                     value={inputOtp}
                     onChange={(e) => setInputOtp(e.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter 6-digit OTP from email"
+                    placeholder="Enter 6-digit OTP from SMS"
                     required
                     className="w-full px-3.5 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl font-mono text-center tracking-widest font-bold focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                   />
