@@ -198,16 +198,17 @@ export function formatRoleLabel(role: UserRole): string {
   return ROLE_OPTIONS.find(r => r.value === role)?.label || role;
 }
 
-// Allowed file types for document uploads (Strictly PDF, JPG, JPEG, PNG, DOCX)
+// Allowed file types for document uploads (Strictly PDF, JPG, JPEG, PNG, WebP, DOCX)
 export const ALLOWED_FILE_TYPES = [
   'application/pdf',
   'image/jpeg',
   'image/jpg',
   'image/png',
+  'image/webp',
   'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/msword',
 ];
 
-export const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.docx', '.doc'];
+export const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.docx', '.doc'];
 
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB

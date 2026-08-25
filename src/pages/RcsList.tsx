@@ -209,6 +209,7 @@ export function RcsList() {
       (r.company_name && r.company_name.toLowerCase().includes(term)) ||
       (r.gst_number && r.gst_number.toLowerCase().includes(term)) ||
       (r.contact_email && r.contact_email.toLowerCase().includes(term)) ||
+      (r.contact_person && r.contact_person.toLowerCase().includes(term)) ||
       (r.website && r.website.toLowerCase().includes(term)) ||
       (r.rcs_business_name && r.rcs_business_name.toLowerCase().includes(term)) ||
       (r.rcs_agent_id && r.rcs_agent_id.toLowerCase().includes(term));

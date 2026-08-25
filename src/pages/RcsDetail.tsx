@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
@@ -22,7 +22,11 @@ import {
   Clock,
   ExternalLink,
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  RefreshCw,
+  Image as ImageIcon,
+  Layers,
+  Sparkles
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
@@ -50,11 +54,17 @@ export function RcsDetail() {
   const queryClient = useQueryClient();
   const { profile } = useAuth();
 
-  // Upload State
+  // General Upload State
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [uploadCategory, setUploadCategory] = useState<DocumentCategory>('gst_certificate');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Hidden File Inputs for Direct Replace
+  const replaceLogoInputRef = useRef<HTMLInputElement>(null);
+  const replaceBannerInputRef = useRef<HTMLInputElement>(null);
+  const replaceDocInputRef = useRef<HTMLInputElement>(null);
+  const [replaceTargetDoc, setReplaceTargetDoc] = useState<OnboardingDocument | null>(null);
 
   // Preview & Delete State
   const [previewDoc, setPreviewDoc] = useState<OnboardingDocument | null>(null);
@@ -162,60 +172,58 @@ export function RcsDetail() {
     },
   });
 
-  // Handle Upload
-  const handleUploadDocument = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedFile || !id || isUploading) return;
-
+  // Core Upload Logic (reusable for new upload, replace logo, replace banner, replace doc)
+  const executeFileUpload = async (file: File, category: DocumentCategory, oldDocIdToReplace?: string) => {
+    if (!id) return;
     setUploadError(null);
-    const fileNameLower = selectedFile.name.toLowerCase();
+
+    const fileNameLower = file.name.toLowerCase();
     const isAllowedExt =
       fileNameLower.endsWith('.pdf') ||
       fileNameLower.endsWith('.jpg') ||
       fileNameLower.endsWith('.jpeg') ||
       fileNameLower.endsWith('.png') ||
+      fileNameLower.endsWith('.webp') ||
       fileNameLower.endsWith('.docx') ||
       fileNameLower.endsWith('.doc');
 
     if (!isAllowedExt) {
-      setUploadError('Only PDF, JPG, PNG, and DOCX documents are allowed in the vault.');
-      return;
+      throw new Error('Supported formats: PDF, JPG, JPEG, PNG, WebP, and DOCX.');
     }
 
-    if (selectedFile.size > MAX_FILE_SIZE) {
-      setUploadError('Maximum file size allowed is 10MB.');
-      return;
+    if (file.size > MAX_FILE_SIZE) {
+      throw new Error('Maximum file size allowed is 10MB.');
     }
 
     setIsUploading(true);
 
     try {
-      const sanitizedName = selectedFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
+      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const uniqueFileName = `${Date.now()}_${sanitizedName}`;
-      const storagePath = `${id}/${uploadCategory}/${uniqueFileName}`;
+      const storagePath = `${id}/${category}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
       // 1. Storage Upload
       try {
         await supabase.storage
           .from('onboarding-documents')
-          .upload(storagePath, selectedFile, {
+          .upload(storagePath, file, {
             cacheControl: '3600',
-            upsert: false,
+            upsert: true,
           });
       } catch (storageErr) {
         console.warn('Storage upload note:', storageErr);
       }
 
-      // 2. Metadata Insert
+      // 2. Metadata Insert / Replace
       const docPayload: any = {
         onboarding_id: id,
-        file_name: selectedFile.name,
-        original_name: selectedFile.name,
-        category: uploadCategory,
+        file_name: file.name,
+        original_name: file.name,
+        category,
         storage_path: storagePath,
-        mime_type: selectedFile.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
-        file_size: selectedFile.size,
+        mime_type: file.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
+        file_size: file.size,
       };
 
       if (uploaderId) {
@@ -228,10 +236,10 @@ export function RcsDetail() {
         console.warn('Metadata insert note:', metaErr);
       }
 
-      // 3. Local Cache Persistence
+      // 3. Local Blob Preview Generation
       let blobUrl = '';
       try {
-        blobUrl = URL.createObjectURL(selectedFile);
+        blobUrl = URL.createObjectURL(file);
       } catch {
         // Ignore
       }
@@ -248,35 +256,69 @@ export function RcsDetail() {
         },
       };
 
+      // 4. Update Local Caches (Remove old doc if replacing)
       try {
         const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
-        localDocs.unshift(newDocItem);
-        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(localDocs));
+        let updatedLocal = localDocs;
+        if (oldDocIdToReplace) {
+          updatedLocal = updatedLocal.filter((d: any) => d.id !== oldDocIdToReplace && d.category !== category);
+        }
+        updatedLocal.unshift(newDocItem);
+        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updatedLocal));
 
         const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
-        globalDocs.unshift(newDocItem);
-        localStorage.setItem('immense_all_vault_docs', JSON.stringify(globalDocs));
+        let updatedGlobal = globalDocs;
+        if (oldDocIdToReplace) {
+          updatedGlobal = updatedGlobal.filter((d: any) => d.id !== oldDocIdToReplace && !(d.onboarding_id === id && d.category === category));
+        }
+        updatedGlobal.unshift(newDocItem);
+        localStorage.setItem('immense_all_vault_docs', JSON.stringify(updatedGlobal));
       } catch {
         // Ignore
       }
 
-      // 4. Log Audit
+      // 5. Log Audit
       await logAudit('document_uploaded', 'document', id, {
-        file_name: selectedFile.name,
-        category: uploadCategory,
-        size_bytes: selectedFile.size,
+        file_name: file.name,
+        category,
+        size_bytes: file.size,
         platform: 'RCS',
+        is_replacement: Boolean(oldDocIdToReplace),
       });
 
-      toast.success('Document Vaulted', `${selectedFile.name} securely stored.`);
-      setSelectedFile(null);
+      toast.success(
+        oldDocIdToReplace ? `${formatCategoryLabel(category)} Updated` : 'Document Vaulted',
+        `${file.name} securely stored.`
+      );
+
       queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
       queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
       queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
-    } catch (err: any) {
-      setUploadError(err.message || 'Could not upload document.');
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  // General Upload Form Submit
+  const handleUploadDocument = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!selectedFile || !id || isUploading) return;
+
+    try {
+      await executeFileUpload(selectedFile, uploadCategory);
+      setSelectedFile(null);
+    } catch (err: any) {
+      setUploadError(err.message || 'Could not upload document.');
+    }
+  };
+
+  // Replace Specific Document / Media
+  const handleReplaceFile = async (file: File, category: DocumentCategory, docId?: string) => {
+    try {
+      await executeFileUpload(file, category, docId);
+      setReplaceTargetDoc(null);
+    } catch (err: any) {
+      toast.error('Replace Failed', err.message);
     }
   };
 
@@ -307,7 +349,7 @@ export function RcsDetail() {
     }
   };
 
-  // Download Document with Original Filename
+  // Download Document with Original Filename Preservation
   const handleDownload = async (doc: OnboardingDocument) => {
     try {
       let downloadUrl = (doc as any).localPreviewUrl;
@@ -420,12 +462,56 @@ export function RcsDetail() {
     );
   }
 
+  // Find dedicated media assets
+  const logoDoc = documents?.find((d) => d.category === 'logo');
+  const bannerDoc = documents?.find((d) => d.category === 'banner_creative');
+
+  // Filter compliance & other documents
+  const complianceDocs = documents?.filter((d) => d.category !== 'logo' && d.category !== 'banner_creative') || [];
+
   const canEdit = profile?.role === 'super_admin' || profile?.role === 'manager';
   const canDelete = profile?.role === 'super_admin';
 
   return (
     <PageLayout title={`RCS Vault: ${record.brand_name}`}>
       <div className="space-y-6">
+        {/* Hidden inputs for Quick Replace */}
+        <input
+          type="file"
+          ref={replaceLogoInputRef}
+          accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleReplaceFile(file, 'logo', logoDoc?.id);
+            e.target.value = '';
+          }}
+        />
+        <input
+          type="file"
+          ref={replaceBannerInputRef}
+          accept=".jpg,.jpeg,.png,.webp,image/jpeg,image/png,image/webp"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file) handleReplaceFile(file, 'banner_creative', bannerDoc?.id);
+            e.target.value = '';
+          }}
+        />
+        <input
+          type="file"
+          ref={replaceDocInputRef}
+          accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.doc,application/pdf,image/jpeg,image/png,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+          className="hidden"
+          onChange={(e) => {
+            const file = e.target.files?.[0];
+            if (file && replaceTargetDoc) {
+              handleReplaceFile(file, replaceTargetDoc.category, replaceTargetDoc.id);
+            }
+            e.target.value = '';
+          }}
+        />
+
         {/* Top Breadcrumb & Actions */}
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -441,7 +527,7 @@ export function RcsDetail() {
                 <StatusBadge status={record.status} />
               </div>
               <p className="text-xs text-gray-500 mt-0.5">
-                {record.company_name} • RCS Business Messaging Repository
+                {record.company_name} • RCS Business Messaging Repository & Media Vault
               </p>
             </div>
           </div>
@@ -464,6 +550,226 @@ export function RcsDetail() {
                 <Trash2 className="w-3.5 h-3.5" /> Delete
               </button>
             )}
+          </div>
+        </div>
+
+        {/* 1. DEDICATED RCS BRAND ASSETS: LOGO & BANNER HERO IMAGE */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-gray-100">
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF]">
+                <Sparkles className="w-5 h-5" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-gray-900">RCS Brand Identity & Media Assets</h3>
+                <p className="text-xs text-gray-500">
+                  Required visual branding for Google RCS Business Profile: Official Logo & Hero Banner
+                </p>
+              </div>
+            </div>
+            <span className="text-xs font-semibold px-3 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200">
+              RCS Media Spec (JPG, PNG, WebP)
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* A. RCS LOGO CARD */}
+            <div className="p-5 bg-gray-50/80 border border-gray-200 rounded-2xl space-y-3 flex flex-col justify-between">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-900 text-sm">1. RCS Brand Logo</span>
+                    {logoDoc && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                        Uploaded
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    Square 1:1 Aspect Ratio • Recommended 224x224px or higher
+                  </p>
+                </div>
+              </div>
+
+              {/* Logo Preview Container */}
+              <div className="h-40 bg-white rounded-xl border border-gray-200 flex items-center justify-center p-3 overflow-hidden relative group">
+                {logoDoc ? (
+                  <>
+                    <img
+                      src={(logoDoc as any).localPreviewUrl || 'https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg'}
+                      alt="RCS Logo"
+                      className="max-h-full max-w-full object-contain rounded-lg shadow-2xs"
+                    />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 rounded-xl backdrop-blur-2xs">
+                      <button
+                        onClick={() => handlePreview(logoDoc)}
+                        className="p-2 bg-white text-gray-900 rounded-xl hover:bg-blue-50 shadow-md cursor-pointer"
+                        title="Preview High-Res"
+                      >
+                        <Eye className="w-4 h-4 text-[#1677FF]" />
+                      </button>
+                      <button
+                        onClick={() => handleDownload(logoDoc)}
+                        className="p-2 bg-white text-gray-900 rounded-xl hover:bg-emerald-50 shadow-md cursor-pointer"
+                        title="Download Original"
+                      >
+                        <Download className="w-4 h-4 text-emerald-600" />
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center space-y-1.5 text-gray-400">
+                    <ImageIcon className="w-10 h-10 mx-auto text-gray-300" />
+                    <p className="text-xs font-semibold">No RCS Logo Uploaded</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Logo Actions */}
+              <div className="flex items-center justify-between pt-1">
+                {logoDoc ? (
+                  <div className="flex items-center gap-2 w-full">
+                    <button
+                      onClick={() => handlePreview(logoDoc)}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-all cursor-pointer shadow-2xs"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-[#1677FF]" /> Preview
+                    </button>
+                    <button
+                      onClick={() => handleDownload(logoDoc)}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-all cursor-pointer shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5 text-emerald-600" /> Download
+                    </button>
+                    {canEdit && (
+                      <>
+                        <button
+                          onClick={() => replaceLogoInputRef.current?.click()}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl transition-all cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" /> Replace
+                        </button>
+                        <button
+                          onClick={() => setDeleteDocTarget(logoDoc)}
+                          className="p-2 text-red-600 hover:bg-red-50 rounded-xl transition-all cursor-pointer"
+                          title="Delete Logo"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  canEdit && (
+                    <button
+                      onClick={() => replaceLogoInputRef.current?.click()}
+                      className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4" /> Upload RCS Logo
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
+
+            {/* B. RCS BANNER / HERO IMAGE CARD */}
+            <div className="p-5 bg-gray-50/80 border border-gray-200 rounded-2xl space-y-3 flex flex-col justify-between">
+              <div className="flex items-start justify-between">
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="font-bold text-gray-900 text-sm">2. RCS Banner / Hero Image</span>
+                    {bannerDoc && (
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800">
+                        Uploaded
+                      </span>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-gray-500 mt-0.5">
+                    Landscape 3:1 or 16:9 Aspect Ratio • Recommended 1440x480px
+                  </p>
+                </div>
+              </div>
+
+              {/* Banner Preview Container */}
+              <div className="h-40 bg-white rounded-xl border border-gray-200 flex items-center justify-center p-2 overflow-hidden relative group">
+                {bannerDoc ? (
+                  <>
+                    <img
+                      src={(bannerDoc as any).localPreviewUrl || 'https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg'}
+                      alt="RCS Banner"
+                      className="h-full w-full object-cover rounded-lg shadow-2xs"
+                    />
+                    <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 rounded-xl backdrop-blur-2xs">
+                      <button
+                        onClick={() => handlePreview(bannerDoc)}
+                        className="p-2 bg-white text-gray-900 rounded-xl hover:bg-blue-50 shadow-md cursor-pointer"
+                        title="Preview High-Res"
+                      >
+                        <Eye className="w-4 h-4 text-[#1677FF]" />
+                      </button>
+                      <button
+                        onClick={() => handleDownload(bannerDoc)}
+                        className="p-2 bg-white text-gray-900 rounded-xl hover:bg-emerald-50 shadow-md cursor-pointer"
+                        title="Download Original"
+                      >
+                        <Download className="w-4 h-4 text-emerald-600" />
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <div className="text-center space-y-1.5 text-gray-400">
+                    <Layers className="w-10 h-10 mx-auto text-gray-300" />
+                    <p className="text-xs font-semibold">No RCS Banner Uploaded</p>
+                  </div>
+                )}
+              </div>
+
+              {/* Banner Actions */}
+              <div className="flex items-center justify-between pt-1">
+                {bannerDoc ? (
+                  <div className="flex items-center gap-2 w-full">
+                    <button
+                      onClick={() => handlePreview(bannerDoc)}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-all cursor-pointer shadow-2xs"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-[#1677FF]" /> Preview
+                    </button>
+                    <button
+                      onClick={() => handleDownload(bannerDoc)}
+                      className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-gray-700 bg-white border border-gray-200 hover:bg-gray-50 rounded-xl transition-all cursor-pointer shadow-2xs"
+                    >
+                      <Download className="w-3.5 h-3.5 text-emerald-600" /> Download
+                    </button>
+                    {canEdit && (
+                      <>
+                        <button
+                          onClick={() => replaceBannerInputRef.current?.click()}
+                          className="flex-1 inline-flex items-center justify-center gap-1.5 py-2 px-3 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-xl transition-all cursor-pointer"
+                        >
+                          <RefreshCw className="w-3.5 h-3.5" /> Replace
+                        </button>
+                        <button
+                          onClick={() => setDeleteDocTarget(bannerDoc)}
+                          className="p-2 text-red-600 hover:bg-red-50 rounded-xl transition-all cursor-pointer"
+                          title="Delete Banner"
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
+                  </div>
+                ) : (
+                  canEdit && (
+                    <button
+                      onClick={() => replaceBannerInputRef.current?.click()}
+                      className="w-full inline-flex items-center justify-center gap-2 py-2.5 px-4 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all cursor-pointer"
+                    >
+                      <Upload className="w-4 h-4" /> Upload RCS Hero Banner
+                    </button>
+                  )
+                )}
+              </div>
+            </div>
           </div>
         </div>
 
@@ -569,7 +875,7 @@ export function RcsDetail() {
           </div>
         </div>
 
-        {/* Card 3: Dedicated Document Vault */}
+        {/* 2. COMPLIANCE & LEGAL DOCUMENTS VAULT */}
         <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-6">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100">
             <div className="flex items-center gap-2.5">
@@ -577,83 +883,85 @@ export function RcsDetail() {
                 <FolderLock className="w-5 h-5" />
               </div>
               <div>
-                <h3 className="text-base font-bold text-gray-900">RCS Client Document Vault</h3>
+                <h3 className="text-base font-bold text-gray-900">Compliance & Legal Documents Vault</h3>
                 <p className="text-xs text-gray-500">
-                  Encrypted storage for GST Certificate, PAN Card, Company KYC, Logo & Brand Images
+                  Encrypted repository for GST Certificate, PAN Card, KYC Documents & Agreements
                 </p>
               </div>
             </div>
 
             <span className="text-xs font-semibold px-3 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 self-start sm:self-auto">
-              {documents?.length || 0} Files Vaulted
+              {complianceDocs.length} Compliance Documents Vaulted
             </span>
           </div>
 
           {/* Upload Form */}
-          <form
-            onSubmit={handleUploadDocument}
-            className="p-4 bg-gray-50/80 border border-dashed border-gray-300 rounded-2xl space-y-3"
-          >
-            {uploadError && (
-              <div className="p-3 rounded-xl bg-red-50 border border-red-200 flex items-start gap-2 text-red-700 text-xs">
-                <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
-                <p>{uploadError}</p>
-              </div>
-            )}
+          {canEdit && (
+            <form
+              onSubmit={handleUploadDocument}
+              className="p-4 bg-gray-50/80 border border-dashed border-gray-300 rounded-2xl space-y-3"
+            >
+              {uploadError && (
+                <div className="p-3 rounded-xl bg-red-50 border border-red-200 flex items-start gap-2 text-red-700 text-xs">
+                  <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+                  <p>{uploadError}</p>
+                </div>
+              )}
 
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              {/* Category Selector */}
-              <div className="sm:w-64">
-                <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
-                  Document Category
-                </label>
-                <select
-                  value={uploadCategory}
-                  onChange={(e) => setUploadCategory(e.target.value as DocumentCategory)}
-                  className="w-full px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
-                >
-                  {CATEGORY_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
+              <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+                {/* Category Selector */}
+                <div className="sm:w-64">
+                  <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
+                    Document Category
+                  </label>
+                  <select
+                    value={uploadCategory}
+                    onChange={(e) => setUploadCategory(e.target.value as DocumentCategory)}
+                    className="w-full px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                  >
+                    <option value="gst_certificate">GST Certificate</option>
+                    <option value="pan_card">PAN Card</option>
+                    <option value="kyc_document">Company KYC</option>
+                    <option value="meta_verification">Meta/Facebook Verification</option>
+                    <option value="other">Other Documents</option>
+                  </select>
+                </div>
 
-              {/* File Input */}
-              <div className="flex-1">
-                <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
-                  Select Document (PDF, JPG, PNG, DOCX • Max 10MB)
-                </label>
-                <input
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,application/pdf,image/jpeg,image/png,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
-                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                  className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
-                />
-              </div>
+                {/* File Input */}
+                <div className="flex-1">
+                  <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
+                    Select Document (PDF, JPG, PNG, DOCX • Max 10MB)
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.doc,application/pdf,image/jpeg,image/png,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
+                    onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
+                    className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
+                  />
+                </div>
 
-              {/* Submit Button */}
-              <div className="sm:self-end">
-                <button
-                  type="submit"
-                  disabled={!selectedFile || isUploading}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
-                >
-                  <Upload className="w-3.5 h-3.5" />
-                  {isUploading ? 'Vaulting...' : 'Upload Document'}
-                </button>
+                {/* Submit Button */}
+                <div className="sm:self-end">
+                  <button
+                    type="submit"
+                    disabled={!selectedFile || isUploading}
+                    className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl transition-all shadow-xs disabled:opacity-50 cursor-pointer"
+                  >
+                    <Upload className="w-3.5 h-3.5" />
+                    {isUploading ? 'Vaulting...' : 'Upload Document'}
+                  </button>
+                </div>
               </div>
-            </div>
-          </form>
+            </form>
+          )}
 
-          {/* Document List */}
-          {documents && documents.length > 0 ? (
+          {/* Compliance Document List */}
+          {complianceDocs.length > 0 ? (
             <div className="overflow-x-auto">
               <table className="w-full text-left text-xs">
                 <thead className="bg-gray-50 border-b border-gray-200 text-gray-500 uppercase font-semibold">
                   <tr>
-                    <th className="py-3 px-4">Document</th>
+                    <th className="py-3 px-4">Document Name</th>
                     <th className="py-3 px-4">Category</th>
                     <th className="py-3 px-4">File Size</th>
                     <th className="py-3 px-4">Uploaded By</th>
@@ -662,7 +970,7 @@ export function RcsDetail() {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100 text-gray-700">
-                  {documents.map((doc) => (
+                  {complianceDocs.map((doc) => (
                     <tr key={doc.id} className="hover:bg-blue-50/20 transition-colors">
                       <td className="py-3 px-4">
                         <div className="flex items-center gap-2.5">
@@ -708,13 +1016,25 @@ export function RcsDetail() {
                             <Download className="w-4 h-4" />
                           </button>
                           {canEdit && (
-                            <button
-                              onClick={() => setDeleteDocTarget(doc)}
-                              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
-                              title="Delete Document"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
+                            <>
+                              <button
+                                onClick={() => {
+                                  setReplaceTargetDoc(doc);
+                                  replaceDocInputRef.current?.click();
+                                }}
+                                className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer"
+                                title="Replace / Update Document"
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => setDeleteDocTarget(doc)}
+                                className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors cursor-pointer"
+                                title="Delete Document"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>
@@ -725,7 +1045,7 @@ export function RcsDetail() {
             </div>
           ) : (
             <div className="text-center py-8 text-gray-400 text-xs">
-              No compliance documents or brand assets uploaded for this client yet.
+              No compliance documents uploaded yet. Upload GST Certificate, PAN Card, or KYC above.
             </div>
           )}
         </div>
@@ -736,9 +1056,9 @@ export function RcsDetail() {
         open={Boolean(deleteDocTarget)}
         onClose={() => setDeleteDocTarget(null)}
         onConfirm={() => deleteDocTarget && handleDeleteDocument(deleteDocTarget)}
-        title="Delete Vaulted Document"
-        message={`Are you sure you want to delete "${deleteDocTarget?.file_name}" from this RCS client vault?`}
-        confirmLabel="Delete Document"
+        title="Delete Vaulted File"
+        message={`Are you sure you want to delete "${deleteDocTarget?.file_name}" from this RCS client repository?`}
+        confirmLabel="Delete File"
         variant="danger"
       />
 
