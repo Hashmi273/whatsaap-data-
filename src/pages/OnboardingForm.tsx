@@ -60,10 +60,12 @@ export function OnboardingForm() {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  // Document Uploads during onboarding submission
+  // Document Uploads during onboarding submission (All 5 Categories)
   const [gstFile, setGstFile] = useState<File | null>(null);
   const [panFile, setPanFile] = useState<File | null>(null);
   const [logoFile, setLogoFile] = useState<File | null>(null);
+  const [bannerFile, setBannerFile] = useState<File | null>(null);
+  const [otherDocFile, setOtherDocFile] = useState<File | null>(null);
 
   // Success Modal State
   const [successModalData, setSuccessModalData] = useState<{
@@ -359,10 +361,41 @@ export function OnboardingForm() {
           // Ignore
         }
 
-        // Upload attached documents and link them to this onboarding record
-        if (gstFile) await uploadDoc(gstFile, 'gst_certificate', newRecordId);
-        if (panFile) await uploadDoc(panFile, 'pan_card', newRecordId);
-        if (logoFile) await uploadDoc(logoFile, 'logo', newRecordId);
+        // Upload attached documents across all 5 compliance categories
+        const uploadedDocsForBackup: any[] = [];
+
+        if (gstFile) {
+          await uploadDoc(gstFile, 'gst_certificate', newRecordId);
+          uploadedDocsForBackup.push({ file_name: gstFile.name, category: 'gst_certificate' });
+        }
+        if (panFile) {
+          await uploadDoc(panFile, 'pan_card', newRecordId);
+          uploadedDocsForBackup.push({ file_name: panFile.name, category: 'pan_card' });
+        }
+        if (logoFile) {
+          await uploadDoc(logoFile, 'logo', newRecordId);
+          uploadedDocsForBackup.push({ file_name: logoFile.name, category: 'logo' });
+        }
+        if (bannerFile) {
+          await uploadDoc(bannerFile, 'banner_creative', newRecordId);
+          uploadedDocsForBackup.push({ file_name: bannerFile.name, category: 'banner_creative' });
+        }
+        if (otherDocFile) {
+          await uploadDoc(otherDocFile, 'other', newRecordId);
+          uploadedDocsForBackup.push({ file_name: otherDocFile.name, category: 'other' });
+        }
+
+        // Trigger Google Drive Disaster Recovery Secondary Archive in Background
+        fetch('/api/google-drive-backup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            recordId: newRecordId,
+            platform: 'WhatsApp',
+            companyName: data.company_name?.trim() || data.brand_name.trim(),
+            documents: uploadedDocsForBackup,
+          }),
+        }).catch((e) => console.warn('Background Google Drive backup note:', e));
 
         await logAudit('record_created', 'onboarding', newRecordId, {
           brand_name: data.brand_name,
@@ -373,6 +406,8 @@ export function OnboardingForm() {
         queryClient.invalidateQueries({ queryKey: ['onboarding-records'] });
         queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
         queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+        queryClient.invalidateQueries({ queryKey: ['dr-onboarding-records'] });
+        queryClient.invalidateQueries({ queryKey: ['gdrive-storage-status'] });
 
         // Trigger Success Confirmation Modal
         setSuccessModalData({
@@ -644,7 +679,7 @@ export function OnboardingForm() {
             </span>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {/* GST Certificate */}
             <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2">
               <span className="text-xs font-bold text-gray-800">1. GST Certificate</span>
@@ -681,7 +716,7 @@ export function OnboardingForm() {
 
             {/* Brand Logo */}
             <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2">
-              <span className="text-xs font-bold text-gray-800">3. Brand Logo</span>
+              <span className="text-xs font-bold text-gray-800">3. Brand Profile Logo</span>
               <p className="text-[10px] text-gray-500">PNG / JPG Profile Logo</p>
               <input
                 type="file"
@@ -692,6 +727,40 @@ export function OnboardingForm() {
               {logoFile && (
                 <p className="text-[10px] text-emerald-600 font-semibold truncate flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3" /> {logoFile.name}
+                </p>
+              )}
+            </div>
+
+            {/* Marketing Banner */}
+            <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2">
+              <span className="text-xs font-bold text-gray-800">4. Marketing Hero Banner</span>
+              <p className="text-[10px] text-gray-500">PNG / JPG Header Asset</p>
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.webp"
+                onChange={(e) => setBannerFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
+              />
+              {bannerFile && (
+                <p className="text-[10px] text-emerald-600 font-semibold truncate flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> {bannerFile.name}
+                </p>
+              )}
+            </div>
+
+            {/* Other Document / Meta Agreement */}
+            <div className="p-3.5 bg-gray-50/80 border border-gray-200 rounded-xl space-y-2 sm:col-span-2 lg:col-span-1">
+              <span className="text-xs font-bold text-gray-800">5. Other Compliance Doc / Authorization</span>
+              <p className="text-[10px] text-gray-500">KYC, Agreement, Meta letter (PDF/Doc)</p>
+              <input
+                type="file"
+                accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,.xlsx,.xls"
+                onChange={(e) => setOtherDocFile(e.target.files?.[0] || null)}
+                className="w-full text-[11px] text-gray-500 file:mr-2 file:py-1 file:px-2.5 file:rounded-lg file:border-0 file:text-[11px] file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
+              />
+              {otherDocFile && (
+                <p className="text-[10px] text-emerald-600 font-semibold truncate flex items-center gap-1">
+                  <CheckCircle2 className="w-3 h-3" /> {otherDocFile.name}
                 </p>
               )}
             </div>
