@@ -68,7 +68,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       }),
     });
 
-    const tokenData = await tokenRes.json();
+    const tokenData: any = (await tokenRes.json()) as any;
 
     if (!tokenRes.ok || !tokenData.access_token) {
       const errMsg = tokenData.error_description || tokenData.error || 'Failed to exchange authorization code.';
@@ -88,7 +88,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         headers: { Authorization: `Bearer ${accessToken}` },
       });
       if (userRes.ok) {
-        const userData = await userRes.json();
+        const userData: any = (await userRes.json()) as any;
         if (userData.email) {
           userEmail = userData.email;
         }

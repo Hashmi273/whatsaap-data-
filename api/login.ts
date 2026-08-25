@@ -117,7 +117,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
         console.log(`[AUTH-LOGIN] Supabase token grant HTTP status: ${authRes.status}`);
 
-        const authData = await authRes.json().catch(() => ({}));
+        const authData: any = (await authRes.json().catch(() => ({}))) as any;
         if (authRes.ok && authData?.access_token) {
           authenticated = true;
           authUserId = authData.user?.id || '';
@@ -142,7 +142,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
         console.log(`[AUTH-LOGIN] Supabase admin users lookup HTTP status: ${listRes.status}`);
 
-        const listData = await listRes.json().catch(() => ({}));
+        const listData: any = (await listRes.json().catch(() => ({}))) as any;
         const usersList: any[] = Array.isArray(listData) ? listData : listData?.users || [];
         const existingUser = usersList.find((u) => u.email?.toLowerCase() === cleanEmail);
 
@@ -174,7 +174,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           });
 
           console.log(`[AUTH-LOGIN] Auto-provision user in Supabase HTTP status: ${createRes.status}`);
-          const createData = await createRes.json().catch(() => ({}));
+          const createData: any = (await createRes.json().catch(() => ({}))) as any;
           if (createRes.ok && createData?.id) {
             authUserId = createData.id;
             authenticated = true;

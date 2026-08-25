@@ -29,7 +29,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         },
       });
 
-      const allRecords: any[] = await recordsRes.json().catch(() => []);
+      const allRecords: any[] = (await recordsRes.json().catch(() => [])) as any[];
       const testKeywords = ['test', 'demo', 'dummy', 'sample', 'prestige', 'tata motors', 'apollo diagnostics', 'himalaya'];
 
       const testRecords = Array.isArray(allRecords)
@@ -48,7 +48,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           },
         });
 
-        const docs: any[] = await docsRes.json().catch(() => []);
+        const docs: any[] = (await docsRes.json().catch(() => [])) as any[];
         if (Array.isArray(docs)) {
           for (const doc of docs) {
             if (doc.storage_path) {

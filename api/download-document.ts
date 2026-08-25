@@ -98,7 +98,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         });
 
         if (signRes.ok) {
-          const signData = await signRes.json().catch(() => ({}));
+          const signData: any = (await signRes.json().catch(() => ({}))) as any;
           const rawUrl = signData?.signedURL || signData?.signedUrl || '';
 
           if (rawUrl) {

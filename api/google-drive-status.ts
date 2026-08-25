@@ -36,7 +36,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           },
         });
         if (configRes.ok) {
-          const configRows: Array<{ key: string; value: string }> = await configRes.json().catch(() => []);
+          const configRows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
           const tokenRow = configRows.find((r) => r.key === 'google_drive_refresh_token');
           const emailRow = configRows.find((r) => r.key === 'google_drive_email');
           if (tokenRow?.value) {
@@ -68,13 +68,13 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
             grant_type: 'refresh_token',
           }),
         });
-        const tokenData = await tokenRes.json();
+        const tokenData: any = (await tokenRes.json()) as any;
         if (tokenData.access_token) {
           isConnected = true;
           const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota,user', {
             headers: { Authorization: `Bearer ${tokenData.access_token}` },
           });
-          const aboutData = await aboutRes.json();
+          const aboutData: any = (await aboutRes.json()) as any;
           if (aboutData.user?.emailAddress) {
             targetAccount = aboutData.user.emailAddress;
           }
@@ -98,7 +98,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
             Authorization: `Bearer ${supabaseServiceKey.trim()}`,
           },
         });
-        records = await recRes.json().catch(() => []);
+        records = (await recRes.json().catch(() => [])) as any[];
       } catch {
         // Fallback
       }

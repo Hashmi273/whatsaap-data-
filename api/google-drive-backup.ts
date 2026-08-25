@@ -20,7 +20,7 @@ async function getGoogleAccessToken(
         },
       });
       if (configRes.ok) {
-        const rows: Array<{ key: string; value: string }> = await configRes.json().catch(() => []);
+        const rows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
         const tokenRow = rows.find((r) => r.key === 'google_drive_refresh_token');
         const emailRow = rows.find((r) => r.key === 'google_drive_email');
         if (tokenRow?.value) refreshToken = tokenRow.value.trim();
@@ -45,7 +45,7 @@ async function getGoogleAccessToken(
         }),
       });
 
-      const tokenData = await tokenRes.json();
+      const tokenData: any = (await tokenRes.json()) as any;
       if (tokenData.access_token) {
         return { token: tokenData.access_token, email: userEmail };
       }
@@ -75,7 +75,7 @@ async function findOrCreateFolder(
     headers: { Authorization: `Bearer ${accessToken}` },
   });
 
-  const searchData = await searchRes.json().catch(() => ({}));
+  const searchData: any = (await searchRes.json().catch(() => ({}))) as any;
   if (searchData.files && searchData.files.length > 0) {
     const file = searchData.files[0];
     return { id: file.id, url: `https://drive.google.com/drive/folders/${file.id}` };
@@ -95,7 +95,7 @@ async function findOrCreateFolder(
     }),
   });
 
-  const createData = await createRes.json();
+  const createData: any = (await createRes.json()) as any;
   return { id: createData.id, url: `https://drive.google.com/drive/folders/${createData.id}` };
 }
 
@@ -192,7 +192,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
               )}&fields=files(id,name)`,
               { headers: { Authorization: `Bearer ${accessToken}` } }
             );
-            const checkData = await checkRes.json().catch(() => ({}));
+            const checkData: any = (await checkRes.json().catch(() => ({}))) as any;
 
             if (!checkData.files || checkData.files.length === 0) {
               let fileBuffer: Buffer | null = null;

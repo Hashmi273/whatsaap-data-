@@ -89,7 +89,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         },
       });
 
-      const records = await checkRes.json().catch(() => []);
+      const records: any[] = (await checkRes.json().catch(() => [])) as any[];
 
       if (!records || records.length === 0) {
         res.statusCode = 400;
@@ -103,7 +103,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
-      const activeRecord = records[0];
+      const activeRecord: any = records[0];
 
       // Check Expiry (10 minutes)
       if (new Date(activeRecord.expires_at).getTime() < Date.now()) {
@@ -172,7 +172,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
             },
           }
         );
-        const searchData = await searchRes.json().catch(() => ({}));
+        const searchData: any = (await searchRes.json().catch(() => ({}))) as any;
         const targetUser = Array.isArray(searchData) ? searchData[0] : searchData?.users?.[0];
 
         if (targetUser?.id) {
@@ -202,7 +202,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
               user_metadata: { full_name: cleanTargetEmail.split('@')[0] },
             }),
           });
-          const createData = await createRes.json().catch(() => ({}));
+          const createData: any = (await createRes.json().catch(() => ({}))) as any;
           if (createData?.id) {
             targetUserId = createData.id;
           }
