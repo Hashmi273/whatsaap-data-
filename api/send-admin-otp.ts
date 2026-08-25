@@ -79,92 +79,53 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     let smsSent = false;
     let providerError = '';
 
-    const smsApiUrl = process.env.SMS_API_URL;
-    const smsUserId = process.env.SMS_API_USER_ID;
-    const smsPassword = process.env.SMS_API_PASSWORD;
-    const smsSenderId = process.env.SMS_SENDER_ID || 'ZION';
-    const smsEntityId = process.env.SMS_ENTITY_ID || '';
-    const smsTemplateId = process.env.SMS_TEMPLATE_ID || '';
-    const destinationPhone = ADMIN_SECURITY_PHONE.trim();
+    const smsApiUrl = process.env.SMS_API_URL || 'http://cpassweb.in/api/SmsApi/SendSingleApi';
+    const smsUserId = process.env.SMS_API_USER_ID || 'Immense_Rcs';
+    const smsPassword = process.env.SMS_API_PASSWORD || 'Immense_Rcs';
+    const smsSenderId = process.env.SMS_SENDER_ID || 'ZIONEN';
+    const smsEntityId = process.env.SMS_ENTITY_ID || '1001970166055565595';
+    const smsTemplateId = process.env.SMS_TEMPLATE_ID || '1207177987659243590';
+    const destinationPhone = (process.env.ADMIN_SECURITY_PHONE || '8858674641').trim();
 
-    if (smsApiUrl) {
-      try {
-        let endpointUrl = smsApiUrl.trim();
+    try {
+      // Build CPass SendSingleApi URL
+      const cpassUrl = new URL(smsApiUrl.trim());
+      cpassUrl.searchParams.set('UserID', smsUserId);
+      cpassUrl.searchParams.set('Password', smsPassword);
+      cpassUrl.searchParams.set('SenderID', smsSenderId);
+      cpassUrl.searchParams.set('Phno', destinationPhone);
+      cpassUrl.searchParams.set('Msg', messageText);
+      cpassUrl.searchParams.set('EntityID', smsEntityId);
+      cpassUrl.searchParams.set('TemplateID', smsTemplateId);
 
-        // Check if URL has template placeholders
-        if (endpointUrl.includes('{OTP}') || endpointUrl.includes('{PHONE}')) {
-          endpointUrl = endpointUrl
-            .replace('{OTP}', encodeURIComponent(otp))
-            .replace('{PHONE}', encodeURIComponent(destinationPhone))
-            .replace('{MESSAGE}', encodeURIComponent(messageText))
-            .replace('{USER_ID}', encodeURIComponent(smsUserId || ''))
-            .replace('{PASSWORD}', encodeURIComponent(smsPassword || ''))
-            .replace('{SENDER_ID}', encodeURIComponent(smsSenderId))
-            .replace('{ENTITY_ID}', encodeURIComponent(smsEntityId))
-            .replace('{TEMPLATE_ID}', encodeURIComponent(smsTemplateId));
+      const gatewayRes = await fetch(cpassUrl.toString(), {
+        method: 'GET',
+        headers: {
+          'Accept': 'application/json, text/plain, */*',
+        },
+      });
 
-          const gatewayRes = await fetch(endpointUrl, { method: 'GET' });
-          const gatewayText = await gatewayRes.text().catch(() => '');
+      const gatewayText = await gatewayRes.text().catch(() => '');
 
-          if (gatewayRes.ok && !gatewayText.toLowerCase().includes('error') && !gatewayText.toLowerCase().includes('failed') && !gatewayText.toLowerCase().includes('invalid')) {
-            smsSent = true;
-          } else {
-            providerError = gatewayText || `SMS Gateway HTTP ${gatewayRes.status}`;
-          }
+      // Check if response indicates success
+      if (gatewayRes.ok) {
+        const lower = gatewayText.toLowerCase();
+        if (
+          lower.includes('invalid') ||
+          lower.includes('failed') ||
+          lower.includes('unauthorized') ||
+          lower.includes('insufficient') ||
+          lower.includes('template mismatch')
+        ) {
+          providerError = gatewayText || 'SMS Gateway rejected the request.';
         } else {
-          // Standard HTTP POST / GET query parameters to SMS Gateway
-          const params = new URLSearchParams();
-          if (smsUserId) params.append('user', smsUserId);
-          if (smsUserId) params.append('username', smsUserId);
-          if (smsUserId) params.append('userid', smsUserId);
-          if (smsPassword) params.append('pass', smsPassword);
-          if (smsPassword) params.append('password', smsPassword);
-          params.append('sender', smsSenderId);
-          params.append('senderid', smsSenderId);
-          params.append('phone', destinationPhone);
-          params.append('mobile', destinationPhone);
-          params.append('numbers', destinationPhone);
-          params.append('text', messageText);
-          params.append('msg', messageText);
-          params.append('message', messageText);
-          if (smsEntityId) {
-            params.append('entityid', smsEntityId);
-            params.append('entity_id', smsEntityId);
-            params.append('dltentityid', smsEntityId);
-          }
-          if (smsTemplateId) {
-            params.append('templateid', smsTemplateId);
-            params.append('template_id', smsTemplateId);
-            params.append('dlttemplateid', smsTemplateId);
-          }
-
-          // Try POST first
-          let gatewayRes = await fetch(endpointUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: params.toString(),
-          }).catch(() => null);
-
-          // If POST rejected, try GET query params
-          if (!gatewayRes || !gatewayRes.ok) {
-            const separator = endpointUrl.includes('?') ? '&' : '?';
-            const getUrl = `${endpointUrl}${separator}${params.toString()}`;
-            gatewayRes = await fetch(getUrl, { method: 'GET' });
-          }
-
-          const gatewayText = await gatewayRes.text().catch(() => '');
-
-          if (gatewayRes.ok && !gatewayText.toLowerCase().includes('error') && !gatewayText.toLowerCase().includes('failed') && !gatewayText.toLowerCase().includes('invalid')) {
-            smsSent = true;
-          } else {
-            providerError = gatewayText || `SMS Gateway HTTP ${gatewayRes.status}`;
-          }
+          smsSent = true;
         }
-      } catch (e: any) {
-        providerError = e.message || 'SMS Gateway connection failed.';
+      } else {
+        providerError = gatewayText || `CPass Gateway HTTP ${gatewayRes.status}`;
       }
-    } else {
-      providerError = 'SMS service is not configured. Please configure the SMS provider (SMS_API_URL, SMS_API_USER_ID, SMS_API_PASSWORD) in Vercel environment variables.';
+    } catch (e: any) {
+      providerError = e.message || 'SMS Gateway connection failed.';
     }
 
     // 5. Store Hashed OTP in Supabase Database (never plaintext OTP)
