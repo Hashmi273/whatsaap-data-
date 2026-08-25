@@ -74,8 +74,8 @@ export function Dashboard() {
         // Fallback
       }
 
-      // Default demo stats
-      return { total: 4, pending: 1, in_progress: 1, live: 1, completed: 1, rejected: 0 };
+      // Default zero stats for clean dashboard
+      return { total: 0, pending: 0, in_progress: 0, live: 0, completed: 0, rejected: 0 };
     },
   });
 
