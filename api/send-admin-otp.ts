@@ -6,7 +6,7 @@ interface SendOtpRequestBody {
   targetName?: string;
 }
 
-const ADMIN_SECURITY_PHONE = process.env.ADMIN_SECURITY_PHONE || '8858674641';
+const ADMIN_SECURITY_PHONE = (process.env.ADMIN_SECURITY_PHONE || '8858674641').trim();
 const ALLOWED_EMAIL_DOMAIN = 'immensesmartsolutions.com';
 
 export default async function handler(req: IncomingMessage & { body?: any }, res: ServerResponse) {
@@ -29,7 +29,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
   }
 
   try {
-    // Parse JSON request body
+    // 1. Parse JSON request body
     let body: SendOtpRequestBody;
     if (typeof req.body === 'object' && req.body !== null) {
       body = req.body;
@@ -54,7 +54,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
     const cleanTargetEmail = targetEmail.trim().toLowerCase();
 
-    // 1. Corporate domain validation
+    // 2. Validate Corporate Domain
     if (!cleanTargetEmail.endsWith(`@${ALLOWED_EMAIL_DOMAIN}`)) {
       res.statusCode = 400;
       res.setHeader('Content-Type', 'application/json');
@@ -67,68 +67,95 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
-    // 2. Generate Cryptographically Secure 6-Digit Dynamic OTP (never hardcoded)
-    const otp = crypto.randomInt(100000, 999999).toString();
+    // 3. Generate Cryptographically Secure 6-Digit Dynamic OTP (100000 to 999999)
+    // NEVER hardcoded (no 1111)
+    const otp = crypto.randomInt(100000, 1000000).toString();
     const otpHash = crypto.createHash('sha256').update(otp).digest('hex');
-    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 mins
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString(); // 10 minutes
 
-    // 3. Format SMS Content according to approved DLT Template
+    // 4. Formulate DLT Approved SMS Message Text with dynamic OTP
+    // Valid for 10 minutes. Zion
     const messageText = `Your OTP for verification is ${otp}.\nDo not share it with anyone.\nValid for 10 minutes.\nZion`;
 
-    // 4. Dispatch SMS via CPass SMS Gateway
-    let smsSent = false;
-    let providerError = '';
-
+    // 5. CPass SMS Gateway Parameters (strictly server-side)
     const smsApiUrl = process.env.SMS_API_URL || 'http://cpassweb.in/api/SmsApi/SendSingleApi';
     const smsUserId = process.env.SMS_API_USER_ID || 'Immense_Rcs';
     const smsPassword = process.env.SMS_API_PASSWORD || 'Immense_Rcs';
     const smsSenderId = process.env.SMS_SENDER_ID || 'ZIONEN';
     const smsEntityId = process.env.SMS_ENTITY_ID || '1001970166055565595';
     const smsTemplateId = process.env.SMS_TEMPLATE_ID || '1207177987659243590';
-    const destinationPhone = (process.env.ADMIN_SECURITY_PHONE || '8858674641').trim();
+    const destinationPhone = ADMIN_SECURITY_PHONE;
 
+    // 6. Construct Clean URL-Encoded CPass Single Request
+    const cpassUrl = new URL(smsApiUrl.trim());
+    cpassUrl.searchParams.set('UserID', smsUserId);
+    cpassUrl.searchParams.set('Password', smsPassword);
+    cpassUrl.searchParams.set('SenderID', smsSenderId);
+    cpassUrl.searchParams.set('Phno', destinationPhone);
+    cpassUrl.searchParams.set('Msg', messageText);
+    cpassUrl.searchParams.set('EntityID', smsEntityId);
+    cpassUrl.searchParams.set('TemplateID', smsTemplateId);
+
+    let smsSent = false;
+    let gatewayResponseText = '';
+    let cpassMessageId = '';
+
+    // EXACTLY ONE single HTTP request
     try {
-      // Build CPass SendSingleApi URL
-      const cpassUrl = new URL(smsApiUrl.trim());
-      cpassUrl.searchParams.set('UserID', smsUserId);
-      cpassUrl.searchParams.set('Password', smsPassword);
-      cpassUrl.searchParams.set('SenderID', smsSenderId);
-      cpassUrl.searchParams.set('Phno', destinationPhone);
-      cpassUrl.searchParams.set('Msg', messageText);
-      cpassUrl.searchParams.set('EntityID', smsEntityId);
-      cpassUrl.searchParams.set('TemplateID', smsTemplateId);
-
       const gatewayRes = await fetch(cpassUrl.toString(), {
         method: 'GET',
         headers: {
-          'Accept': 'application/json, text/plain, */*',
+          Accept: 'application/json, text/plain, */*',
         },
       });
 
-      const gatewayText = await gatewayRes.text().catch(() => '');
+      gatewayResponseText = await gatewayRes.text().catch(() => '');
 
-      // Check if response indicates success
       if (gatewayRes.ok) {
-        const lower = gatewayText.toLowerCase();
+        const lower = gatewayResponseText.toLowerCase();
+        // Check for common error keywords in gateway response
         if (
           lower.includes('invalid') ||
           lower.includes('failed') ||
           lower.includes('unauthorized') ||
           lower.includes('insufficient') ||
-          lower.includes('template mismatch')
+          lower.includes('template mismatch') ||
+          lower.includes('error')
         ) {
-          providerError = gatewayText || 'SMS Gateway rejected the request.';
+          smsSent = false;
         } else {
           smsSent = true;
+          // Extract message ID if returned as JSON or string token
+          try {
+            const parsed = JSON.parse(gatewayResponseText);
+            cpassMessageId = parsed?.MessageId || parsed?.id || parsed?.Status || gatewayResponseText.trim();
+          } catch {
+            cpassMessageId = gatewayResponseText.trim();
+          }
         }
       } else {
-        providerError = gatewayText || `CPass Gateway HTTP ${gatewayRes.status}`;
+        smsSent = false;
       }
-    } catch (e: any) {
-      providerError = e.message || 'SMS Gateway connection failed.';
+    } catch (err: any) {
+      smsSent = false;
+      gatewayResponseText = err.message || 'Connection to CPass SMS gateway timed out.';
     }
 
-    // 5. Store Hashed OTP in Supabase Database (never plaintext OTP)
+    // 7. If dispatch failed, DO NOT create or save any OTP verification record
+    if (!smsSent) {
+      res.statusCode = 503;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: 'Unable to send SMS OTP. Please try again.',
+          gatewayResponse: gatewayResponseText,
+        })
+      );
+      return;
+    }
+
+    // 8. ONLY upon verified gateway acceptance: Store SHA-256 Hashed OTP in Database
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
@@ -151,43 +178,58 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           }),
         });
       } catch (dbErr) {
-        console.warn('DB OTP insert note:', dbErr);
+        console.warn('DB OTP hash record note:', dbErr);
+      }
+
+      // Log dispatch audit record with CPass message ID
+      try {
+        await fetch(`${supabaseUrl}/rest/v1/audit_logs`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey.trim(),
+            Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+            'Content-Type': 'application/json',
+            Prefer: 'return=minimal',
+          },
+          body: JSON.stringify({
+            action: 'sms_otp_dispatched',
+            entity_type: 'auth',
+            entity_id: cleanTargetEmail,
+            metadata: {
+              target_email: cleanTargetEmail,
+              security_phone: destinationPhone,
+              cpass_message_id: cpassMessageId,
+              gateway_response: gatewayResponseText,
+              dispatch_status: 'success',
+              requested_at: new Date().toISOString(),
+            },
+          }),
+        });
+      } catch (auditErr) {
+        console.warn('Audit log dispatch note:', auditErr);
       }
     }
 
-    // 6. Return response based on actual SMS confirmation
-    if (smsSent) {
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(
-        JSON.stringify({
-          success: true,
-          message: `Verification OTP sent successfully to the Super Admin mobile number (+91 ${destinationPhone}).`,
-          targetEmail: cleanTargetEmail,
-          destinationPhone,
-          expiresAt,
-        })
-      );
-    } else {
-      res.statusCode = 503;
-      res.setHeader('Content-Type', 'application/json');
-      res.end(
-        JSON.stringify({
-          success: false,
-          error:
-            providerError ||
-            'Unable to send verification SMS OTP. Please check SMS provider configuration in Vercel environment variables.',
-          targetEmail: cleanTargetEmail,
-        })
-      );
-    }
+    // 9. Return success with gateway confirmation
+    res.statusCode = 200;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        success: true,
+        message: 'SMS OTP accepted by gateway.',
+        messageId: cpassMessageId,
+        destinationPhone,
+        targetEmail: cleanTargetEmail,
+        expiresAt,
+      })
+    );
   } catch (err: any) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
     res.end(
       JSON.stringify({
         success: false,
-        error: err.message || 'Internal Server Error while dispatching SMS verification OTP.',
+        error: 'Unable to send SMS OTP. Please try again.',
       })
     );
   }

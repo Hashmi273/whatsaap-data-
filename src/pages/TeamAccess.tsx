@@ -275,7 +275,7 @@ export function TeamAccess() {
     const targetEmail = resetPasswordProfile.corporate_email.toLowerCase();
 
     try {
-      // 1. Dispatch real SMS OTP via serverless backend API
+      // 1. Dispatch real SMS OTP via serverless backend API (single request)
       const response = await fetch('/api/send-admin-otp', {
         method: 'POST',
         headers: {
@@ -292,22 +292,18 @@ export function TeamAccess() {
       if (response.ok && result.success) {
         setEmailProviderStatus('sent');
         toast.success(
-          'Verification OTP Dispatched',
-          `Verification OTP sent successfully to the Super Admin mobile number (+91 ${ADMIN_SECURITY_PHONE}).`
+          'SMS OTP Accepted',
+          'SMS OTP accepted by gateway.'
         );
         setResetStep('verify');
       } else {
-        const errorMsg =
-          result.error ||
-          'Unable to send verification SMS OTP. Please check SMS provider configuration in Vercel environment variables.';
+        const errorMsg = result.error || 'Unable to send SMS OTP. Please try again.';
         setEmailProviderStatus('failed');
         setResetError(errorMsg);
         toast.error('SMS Dispatch Failed', errorMsg);
       }
     } catch (err: any) {
-      const errorMsg =
-        err.message ||
-        'Unable to send verification SMS OTP. Please check SMS provider configuration in Vercel environment variables.';
+      const errorMsg = 'Unable to send SMS OTP. Please try again.';
       setEmailProviderStatus('failed');
       setResetError(errorMsg);
       toast.error('SMS Dispatch Failed', errorMsg);
@@ -948,7 +944,7 @@ export function TeamAccess() {
                     className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-semibold text-white bg-amber-600 hover:bg-amber-700 rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
                   >
                     <Send className="w-3.5 h-3.5" />
-                    {isResettingPassword ? 'Generating OTP...' : 'Generate & Dispatch SMS OTP'}
+                    {isResettingPassword ? 'Sending OTP...' : 'Generate & Dispatch SMS OTP'}
                   </button>
                 </div>
               </div>
@@ -958,7 +954,7 @@ export function TeamAccess() {
                 <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-2xl space-y-1 text-xs text-emerald-950">
                   <div className="flex items-center gap-1.5 font-bold text-emerald-900">
                     <ShieldCheck className="w-4 h-4 text-emerald-600" />
-                    <span>Real SMS OTP Verification Dispatched</span>
+                    <span>SMS OTP accepted by gateway</span>
                   </div>
                   <p className="text-[11px] text-emerald-800 leading-relaxed">
                     A secure 6-digit verification code has been dispatched via SMS to the permanent Super Admin number:
@@ -967,7 +963,7 @@ export function TeamAccess() {
                     +91 {ADMIN_SECURITY_PHONE}
                   </p>
                   <p className="text-[10px] text-emerald-700 flex items-center justify-center gap-1 mt-1">
-                    <Clock className="w-3 h-3" /> Valid for 10 minutes • One-time use
+                    <Clock className="w-3 h-3" /> Valid for 10 minutes • Single-use
                   </p>
                 </div>
 
