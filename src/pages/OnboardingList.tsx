@@ -76,18 +76,30 @@ export function OnboardingList() {
   const { data: records, isLoading } = useQuery({
     queryKey: ['onboarding-records'],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('onboarding_records')
-        .select(`
-          *,
-          assigned_profile:profiles!onboarding_records_assigned_to_fkey(id, full_name, corporate_email)
-        `)
-        .order('created_at', { ascending: false });
-
-      if (error || !data || data.length === 0) {
-        return INITIAL_DEMO_ONBOARDINGS as (OnboardingRecord & { assigned_profile: Profile | null })[];
+      let localCustom: any[] = [];
+      try {
+        localCustom = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
+      } catch {
+        // Ignore
       }
-      return data as (OnboardingRecord & { assigned_profile: Profile | null })[];
+
+      try {
+        const { data, error } = await supabase
+          .from('onboarding_records')
+          .select(`
+            *,
+            assigned_profile:profiles!onboarding_records_assigned_to_fkey(id, full_name, corporate_email)
+          `)
+          .order('created_at', { ascending: false });
+
+        if (!error && data && data.length > 0) {
+          return [...localCustom, ...data] as (OnboardingRecord & { assigned_profile: Profile | null })[];
+        }
+      } catch {
+        // Fallback
+      }
+
+      return [...localCustom, ...INITIAL_DEMO_ONBOARDINGS] as (OnboardingRecord & { assigned_profile: Profile | null })[];
     },
   });
 

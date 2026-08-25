@@ -109,6 +109,46 @@ export function OnboardingDetail() {
         // Fallback
       }
 
+      // Check local custom onboardings first if match
+      try {
+        const localCustom = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
+        const localMatch = localCustom.find((r: any) => r.id === id);
+        if (localMatch) {
+          return {
+            ...localMatch,
+            assigned_profile: {
+              id: 'immense-employee-003',
+              full_name: 'Support Executive',
+              corporate_email: 'employee@immensesmartsolutions.com',
+              role: 'employee',
+              department: 'Client Success',
+              is_active: true,
+              avatar_url: null,
+              last_login: null,
+              created_at: '',
+              updated_at: '',
+            },
+            creator_profile: {
+              id: 'immense-admin-001',
+              full_name: 'Immense Super Admin',
+              corporate_email: 'support@immensesmartsolutions.com',
+              role: 'super_admin',
+              department: 'Executive Leadership',
+              is_active: true,
+              avatar_url: null,
+              last_login: null,
+              created_at: '',
+              updated_at: '',
+            },
+          } as unknown as OnboardingRecord & {
+            assigned_profile: Profile | null;
+            creator_profile: Profile | null;
+          };
+        }
+      } catch {
+        // Ignore
+      }
+
       // Find in demo data
       const demoMatch = INITIAL_DEMO_ONBOARDINGS.find((r) => r.id === id) || INITIAL_DEMO_ONBOARDINGS[0];
       return {
