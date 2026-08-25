@@ -166,13 +166,7 @@ export function DocumentSearch() {
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
       return <FileText className="w-5 h-5 text-red-500" />;
     }
-    if (mime.includes('image') || /\.(png|jpg|jpeg|webp)$/i.test(name)) {
-      return <FileImage className="w-5 h-5 text-blue-500" />;
-    }
-    if (mime.includes('excel') || mime.includes('sheet') || /\.(xls|xlsx|csv)$/i.test(name)) {
-      return <FileSpreadsheet className="w-5 h-5 text-emerald-500" />;
-    }
-    return <FileCheck2 className="w-5 h-5 text-indigo-500" />;
+    return <FileImage className="w-5 h-5 text-blue-500" />;
   };
 
   return (

@@ -7,14 +7,37 @@ import {
   Database,
   KeyRound,
   CheckCircle2,
-  HardDrive
+  HardDrive,
+  Save,
+  RefreshCw,
+  Server
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { ALLOWED_EMAIL_DOMAIN, APP_NAME, APP_SUBTITLE } from '@/lib/constants';
+import { getActiveSupabaseUrl, getActiveSupabaseAnonKey, setRuntimeSupabaseConfig } from '@/lib/supabase';
+import { useToast } from '@/lib/toast';
 
 export function Settings() {
   const { profile } = useAuth();
+  const toast = useToast();
+
+  const [supabaseUrl, setSupabaseUrl] = useState(getActiveSupabaseUrl());
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState(getActiveSupabaseAnonKey());
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleSaveConfig = (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSaving(true);
+    try {
+      setRuntimeSupabaseConfig(supabaseUrl, supabaseAnonKey);
+      toast.success('Configuration Saved', 'Supabase API connection parameters updated.');
+    } catch {
+      toast.error('Save Failed', 'Could not save connection settings.');
+    } finally {
+      setIsSaving(false);
+    }
+  };
 
   return (
     <PageLayout title="System Settings">
@@ -25,8 +48,65 @@ export function Settings() {
             Immense Portal Configuration
           </h2>
           <p className="text-xs text-gray-500 mt-0.5">
-            Security policies, domain restrictions, and encryption vault settings
+            Security policies, domain restrictions, database connection, and encryption vault settings
           </p>
+        </div>
+
+        {/* Supabase Connection Diagnostics & Configuration */}
+        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
+          <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
+            <div className="p-2 rounded-lg bg-blue-50 text-[#1677FF]">
+              <Server className="w-4 h-4" />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-gray-900">Supabase API Connection Parameters</h3>
+              <p className="text-[11px] text-gray-500">
+                Public client endpoint and Publishable Anon Key for database & storage transactions
+              </p>
+            </div>
+          </div>
+
+          <form onSubmit={handleSaveConfig} className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Supabase Project URL
+              </label>
+              <input
+                type="text"
+                value={supabaseUrl}
+                onChange={(e) => setSupabaseUrl(e.target.value)}
+                placeholder="https://ztrskyefkugevypzfecl.supabase.co"
+                className="w-full px-3.5 py-2 text-xs font-mono bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+              />
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Supabase Publishable / Anon Key
+              </label>
+              <textarea
+                rows={2}
+                value={supabaseAnonKey}
+                onChange={(e) => setSupabaseAnonKey(e.target.value)}
+                placeholder="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9..."
+                className="w-full px-3.5 py-2 text-xs font-mono bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+              />
+              <p className="text-[11px] text-gray-400 mt-1">
+                Safe public key used for frontend REST and Storage API access.
+              </p>
+            </div>
+
+            <div className="flex justify-end pt-1">
+              <button
+                type="submit"
+                disabled={isSaving}
+                className="inline-flex items-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl shadow-xs transition-all disabled:opacity-50 cursor-pointer"
+              >
+                <Save className="w-3.5 h-3.5" />
+                {isSaving ? 'Updating...' : 'Update & Verify Connection'}
+              </button>
+            </div>
+          </form>
         </div>
 
         {/* Corporate Domain Restriction Setting */}

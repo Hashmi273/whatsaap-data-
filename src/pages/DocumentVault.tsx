@@ -116,13 +116,7 @@ export function DocumentVault() {
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
       return <FileText className="w-4 h-4 text-red-500" />;
     }
-    if (mime.includes('image') || /\.(png|jpg|jpeg|webp)$/i.test(name)) {
-      return <FileImage className="w-4 h-4 text-blue-500" />;
-    }
-    if (mime.includes('excel') || mime.includes('sheet') || /\.(xls|xlsx|csv)$/i.test(name)) {
-      return <FileSpreadsheet className="w-4 h-4 text-emerald-500" />;
-    }
-    return <FileCheck2 className="w-4 h-4 text-indigo-500" />;
+    return <FileImage className="w-4 h-4 text-blue-500" />;
   };
 
   const filteredRecords = (recordsWithDocs || []).filter((r) => {

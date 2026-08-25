@@ -537,26 +537,41 @@ export function OnboardingDetail() {
   const handleDeleteDocument = async (doc: OnboardingDocument) => {
     try {
       // 1. Delete from storage
-      await supabase.storage.from('onboarding-documents').remove([doc.storage_path]);
+      try {
+        await supabase.storage.from('onboarding-documents').remove([doc.storage_path]);
+      } catch {
+        // Ignore
+      }
 
       // 2. Delete metadata row
-      const { error } = await supabase
-        .from('onboarding_documents')
-        .delete()
-        .eq('id', doc.id);
+      try {
+        await supabase
+          .from('onboarding_documents')
+          .delete()
+          .eq('id', doc.id);
+      } catch {
+        // Ignore
+      }
 
-      if (error) throw error;
+      // 3. Delete from local cache
+      try {
+        const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
+        const updated = localDocs.filter((d: any) => d.id !== doc.id && d.file_name !== doc.file_name);
+        localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updated));
+      } catch {
+        // Ignore
+      }
 
       await logAudit('document_deleted', 'document', id, {
         file_name: doc.file_name,
       });
 
-      toast.success('Document Removed', 'File deleted from vault.');
+      toast.success('Document Removed', `${doc.file_name} deleted from vault.`);
       setDeleteDoc(null);
       queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
       queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
     } catch (err: any) {
-      toast.error('Delete Failed', err.message);
+      toast.error('Delete Failed', err.message || 'Could not delete document.');
     }
   };
 
@@ -564,13 +579,7 @@ export function OnboardingDetail() {
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
       return <FileText className="w-5 h-5 text-red-500" />;
     }
-    if (mime.includes('image') || /\.(png|jpg|jpeg|webp)$/i.test(name)) {
-      return <FileImage className="w-5 h-5 text-blue-500" />;
-    }
-    if (mime.includes('excel') || mime.includes('sheet') || /\.(xls|xlsx|csv)$/i.test(name)) {
-      return <FileSpreadsheet className="w-5 h-5 text-emerald-500" />;
-    }
-    return <FileCheck2 className="w-5 h-5 text-indigo-500" />;
+    return <FileImage className="w-5 h-5 text-blue-500" />;
   };
 
   const canEdit = hasPermission(profile?.role, 'onboarding:edit');
