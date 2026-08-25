@@ -274,67 +274,46 @@ export function TeamAccess() {
     setEmailProviderStatus(null);
     const targetEmail = resetPasswordProfile.corporate_email.toLowerCase();
 
-    // 1. Generate cryptographically random 6-digit OTP
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
-    const expiresAt = Date.now() + 10 * 60 * 1000; // 10 mins
-
-    setGeneratedOtp(otpCode);
-
-    // 2. Store active OTP in local storage
     try {
-      const otpPayload = {
-        otp: otpCode,
-        expiresAt,
-        targetEmail,
-        targetName: resetPasswordProfile.full_name,
-        initiatedAt: new Date().toISOString(),
-      };
-      localStorage.setItem(`immense_active_otp_${targetEmail}`, JSON.stringify(otpPayload));
-      localStorage.setItem(`immense_active_otp_${ADMIN_SECURITY_EMAIL.toLowerCase()}`, JSON.stringify(otpPayload));
-    } catch {
-      // Ignore
-    }
-
-    // 3. Attempt dispatching via Supabase Auth
-    try {
-      const { error: adminAuthErr } = await supabase.auth.resetPasswordForEmail(ADMIN_SECURITY_EMAIL, {
-        redirectTo: `${window.location.origin}/reset-password?email=${encodeURIComponent(ADMIN_SECURITY_EMAIL)}`,
+      // 1. Dispatch real email via serverless backend API
+      const response = await fetch('/api/send-admin-otp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          targetEmail,
+          targetName: resetPasswordProfile.full_name,
+        }),
       });
 
-      if (adminAuthErr) {
-        setEmailProviderStatus('unconfigured');
-        toast.info(
-          'Email Service Notice',
-          'Email service is not configured. Please configure the transactional email provider.'
-        );
-      } else {
+      const result = await response.json().catch(() => ({}));
+
+      if (response.ok && result.success) {
         setEmailProviderStatus('sent');
         toast.success(
-          'Security Verification Dispatched',
-          `Verification email & OTP sent to permanent admin email: ${ADMIN_SECURITY_EMAIL}`
+          'Verification Email Sent',
+          `Verification email & OTP sent successfully to ${ADMIN_SECURITY_EMAIL}.`
         );
+        setResetStep('verify');
+      } else {
+        const errorMsg =
+          result.error ||
+          'Unable to send verification email. Please check transactional email provider configuration or contact the Super Admin.';
+        setEmailProviderStatus('failed');
+        setResetError(errorMsg);
+        toast.error('Email Dispatch Failed', errorMsg);
       }
-    } catch {
-      setEmailProviderStatus('unconfigured');
-      toast.info(
-        'Email Service Notice',
-        'Email service is not configured. Please configure the transactional email provider.'
-      );
+    } catch (err: any) {
+      const errorMsg =
+        err.message ||
+        'Unable to send verification email. Please check transactional email provider configuration or contact the Super Admin.';
+      setEmailProviderStatus('failed');
+      setResetError(errorMsg);
+      toast.error('Email Dispatch Failed', errorMsg);
+    } finally {
+      setIsResettingPassword(false);
     }
-
-    try {
-      await logAudit('password_reset_initiated', 'employee', resetPasswordProfile.id, {
-        target_email: targetEmail,
-        target_name: resetPasswordProfile.full_name,
-        security_verification_email: ADMIN_SECURITY_EMAIL,
-        initiated_by: currentProfile?.corporate_email,
-      });
-    } catch {
-      // Ignore
-    }
-
-    setIsResettingPassword(false);
-    setResetStep('verify');
   };
 
   // 2.1 VERIFY OTP & FINALIZE PASSWORD UPDATE (STEP 2)
@@ -344,13 +323,8 @@ export function TeamAccess() {
     setResetError(null);
 
     const cleanInputOtp = inputOtp.trim();
-    if (!cleanInputOtp) {
-      setResetError('Please enter the 6-digit verification code.');
-      return;
-    }
-
-    if (cleanInputOtp !== generatedOtp) {
-      setResetError('Invalid 6-digit verification code. Please check and try again.');
+    if (!cleanInputOtp || cleanInputOtp.length !== 6) {
+      setResetError('Please enter the 6-digit verification code received in your email.');
       return;
     }
 
@@ -368,45 +342,51 @@ export function TeamAccess() {
     const targetEmail = resetPasswordProfile.corporate_email.toLowerCase();
 
     try {
-      // 1. Check expiration
-      const storedOtpRaw = localStorage.getItem(`immense_active_otp_${targetEmail}`);
-      if (storedOtpRaw) {
-        const stored = JSON.parse(storedOtpRaw);
-        if (Date.now() > stored.expiresAt) {
-          throw new Error('This verification code has expired (10-minute limit). Please initiate a fresh reset request.');
+      // 1. Call serverless verification endpoint
+      const response = await fetch('/api/verify-admin-otp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          targetEmail,
+          otp: cleanInputOtp,
+          newPassword: resetNewPass.trim(),
+        }),
+      });
+
+      const result = await response.json().catch(() => ({}));
+
+      if (response.ok && result.success) {
+        // Save new password in custom credentials store
+        const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
+        userPasswords[targetEmail] = resetNewPass.trim();
+        localStorage.setItem('immense_user_passwords', JSON.stringify(userPasswords));
+
+        // Log Audit
+        try {
+          await logAudit('password_reset_completed', 'employee', resetPasswordProfile.id, {
+            target_email: targetEmail,
+            verified_by: ADMIN_SECURITY_EMAIL,
+            completed_by: currentProfile?.corporate_email,
+          });
+        } catch {
+          // Ignore
         }
+
+        toast.success(
+          'Password Updated Successfully',
+          `New password applied for ${resetPasswordProfile.full_name} (${targetEmail}).`
+        );
+
+        setResetPasswordProfile(null);
+        setResetStep('initiate');
+        setInputOtp('');
+        setResetNewPass('');
+        setResetConfirmPass('');
+      } else {
+        throw new Error(result.error || 'Invalid or expired 6-digit OTP verification code.');
       }
-
-      // 2. Save new password in custom credentials store
-      const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
-      userPasswords[targetEmail] = resetNewPass.trim();
-      localStorage.setItem('immense_user_passwords', JSON.stringify(userPasswords));
-
-      // 3. Invalidate OTP (One-time use)
-      localStorage.removeItem(`immense_active_otp_${targetEmail}`);
-      localStorage.removeItem(`immense_active_otp_${ADMIN_SECURITY_EMAIL.toLowerCase()}`);
-
-      // 4. Log Audit
-      try {
-        await logAudit('password_reset_completed', 'employee', resetPasswordProfile.id, {
-          target_email: targetEmail,
-          verified_by: ADMIN_SECURITY_EMAIL,
-          completed_by: currentProfile?.corporate_email,
-        });
-      } catch {
-        // Ignore
-      }
-
-      toast.success(
-        'Password Updated Successfully',
-        `New password applied for ${resetPasswordProfile.full_name} (${targetEmail}).`
-      );
-
-      setResetPasswordProfile(null);
-      setResetStep('initiate');
-      setInputOtp('');
-      setResetNewPass('');
-      setResetConfirmPass('');
     } catch (err: any) {
       setResetError(err.message || 'Could not finalize password update.');
     } finally {
@@ -973,47 +953,35 @@ export function TeamAccess() {
                 </div>
               </div>
             ) : (
-              /* STEP 2: VERIFY OTP & SET NEW PASSWORD */
+              /* STEP 2: VERIFY EMAIL OTP & SET NEW PASSWORD */
               <form onSubmit={handleVerifyAndSetPassword} className="space-y-4">
-                {emailProviderStatus === 'unconfigured' && (
-                  <div className="p-3 bg-blue-50 border border-blue-200 rounded-2xl text-[11px] text-blue-900 flex items-start gap-2">
-                    <AlertCircle className="w-4 h-4 text-[#1677FF] flex-shrink-0 mt-0.5" />
-                    <div>
-                      <p className="font-semibold text-blue-950">Email service is not configured. Please configure the transactional email provider.</p>
-                      <p className="text-blue-800 mt-0.5">Admin Security Verification Token is generated below for verification.</p>
-                    </div>
+                <div className="p-3.5 bg-emerald-50/80 border border-emerald-200 rounded-2xl space-y-1 text-xs text-emerald-950">
+                  <div className="flex items-center gap-1.5 font-bold text-emerald-900">
+                    <ShieldCheck className="w-4 h-4 text-emerald-600" />
+                    <span>Real Email Verification Dispatched</span>
                   </div>
-                )}
-
-                {/* Generated OTP Display */}
-                <div className="p-3.5 bg-slate-900 text-white rounded-2xl space-y-1.5">
-                  <div className="flex items-center justify-between text-[11px] text-slate-300">
-                    <span className="flex items-center gap-1">
-                      <ShieldCheck className="w-3.5 h-3.5 text-emerald-400" /> Super Admin Security OTP
-                    </span>
-                    <span className="flex items-center gap-1 text-amber-300 font-medium">
-                      <Clock className="w-3.5 h-3.5" /> Valid 10 mins
-                    </span>
-                  </div>
-                  <div className="font-mono font-bold text-xl tracking-widest text-emerald-400 text-center py-1 bg-slate-800/80 rounded-xl border border-slate-700">
-                    {generatedOtp}
-                  </div>
-                  <p className="text-[10px] text-slate-400 text-center">
-                    Destination: {ADMIN_SECURITY_EMAIL} • Target: {resetPasswordProfile.corporate_email}
+                  <p className="text-[11px] text-emerald-800 leading-relaxed">
+                    A secure 6-digit verification code has been dispatched to the permanent Super Admin inbox:
+                  </p>
+                  <p className="font-mono font-bold text-emerald-950 bg-white/90 p-1.5 rounded-lg border border-emerald-200 text-center text-xs">
+                    {ADMIN_SECURITY_EMAIL}
+                  </p>
+                  <p className="text-[10px] text-emerald-700 flex items-center justify-center gap-1 mt-1">
+                    <Clock className="w-3 h-3" /> Valid for 10 minutes • One-time use
                   </p>
                 </div>
 
                 {/* OTP Input */}
                 <div>
                   <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
-                    Enter 6-Digit Verification Code <span className="text-red-500">*</span>
+                    Enter 6-Digit Email OTP Code <span className="text-red-500">*</span>
                   </label>
                   <input
                     type="text"
                     maxLength={6}
                     value={inputOtp}
                     onChange={(e) => setInputOtp(e.target.value.replace(/\D/g, ''))}
-                    placeholder="Enter 6-digit OTP"
+                    placeholder="Enter 6-digit OTP from email"
                     required
                     className="w-full px-3.5 py-2.5 text-sm bg-gray-50 border border-gray-200 rounded-xl font-mono text-center tracking-widest font-bold focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                   />
