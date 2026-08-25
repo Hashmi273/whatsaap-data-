@@ -40,6 +40,7 @@ import { logAudit, logCredentialView, logCredentialCopy } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
 import { isValidUuid } from '@/lib/constants';
+import { downloadDocument } from '@/lib/download';
 import {
   CATEGORY_OPTIONS,
   STATUS_OPTIONS,
@@ -505,58 +506,18 @@ export function OnboardingDetail() {
     }
   };
 
-  // Download Document via Signed URL
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+
+  // Download Document via Signed URL / Stream
   const handleDownload = async (doc: OnboardingDocument) => {
+    setDownloadingDocId(doc.id);
     try {
-      let downloadUrl = (doc as any).localPreviewUrl;
-
-      if (!downloadUrl) {
-        try {
-          const { data } = await supabase.storage
-            .from('onboarding-documents')
-            .createSignedUrl(doc.storage_path, 60, {
-              download: doc.file_name,
-            });
-          if (data?.signedUrl) {
-            downloadUrl = data.signedUrl;
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      await logAudit('document_downloaded', 'document', id, {
-        file_name: doc.file_name,
-        category: doc.category,
+      await downloadDocument(doc, {
+        recordId: id,
+        toast,
       });
-
-      if (downloadUrl) {
-        try {
-          const res = await fetch(downloadUrl);
-          const blob = await res.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = blobUrl;
-          link.download = doc.file_name;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-        } catch {
-          const link = document.createElement('a');
-          link.href = downloadUrl;
-          link.download = doc.file_name;
-          link.target = '_blank';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }
-        toast.success('Download Complete', `${doc.file_name} saved.`);
-      } else {
-        toast.info('Document Vaulted', `${doc.file_name} is securely stored in compliance vault.`);
-      }
-    } catch (err: any) {
-      toast.error('Download Failed', err.message || 'File download could not be completed.');
+    } finally {
+      setDownloadingDocId(null);
     }
   };
 

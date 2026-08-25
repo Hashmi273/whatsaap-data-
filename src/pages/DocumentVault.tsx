@@ -30,6 +30,7 @@ import type { OnboardingDocument, OnboardingRecord, DocumentCategory } from '@/t
 import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData';
 import { isValidUuid } from '@/lib/constants';
 import { format } from 'date-fns';
+import { downloadDocument } from '@/lib/download';
 
 export function DocumentVault() {
   const navigate = useNavigate();
@@ -172,55 +173,17 @@ export function DocumentVault() {
     }
   };
 
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+
   const handleDownload = async (doc: OnboardingDocument, recordId: string) => {
+    setDownloadingDocId(doc.id);
     try {
-      let downloadUrl = (doc as any).localPreviewUrl;
-      if (!downloadUrl) {
-        try {
-          const { data } = await supabase.storage
-            .from('onboarding-documents')
-            .createSignedUrl(doc.storage_path, 60, {
-              download: doc.file_name,
-            });
-          if (data?.signedUrl) {
-            downloadUrl = data.signedUrl;
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      await logAudit('document_downloaded', 'document', recordId, {
-        file_name: doc.file_name,
+      await downloadDocument(doc, {
+        recordId,
+        toast,
       });
-
-      if (downloadUrl) {
-        try {
-          const res = await fetch(downloadUrl);
-          const blob = await res.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = blobUrl;
-          link.download = doc.file_name;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-        } catch {
-          const link = document.createElement('a');
-          link.href = downloadUrl;
-          link.download = doc.file_name;
-          link.target = '_blank';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }
-        toast.success('Download Complete', `${doc.file_name} saved.`);
-      } else {
-        toast.info('Document Vaulted', `${doc.file_name} is securely stored.`);
-      }
-    } catch (err: any) {
-      toast.error('Download Failed', err.message || 'Could not download document.');
+    } finally {
+      setDownloadingDocId(null);
     }
   };
 

@@ -46,6 +46,7 @@ import type {
 } from '@/types/database';
 import { isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
+import { downloadDocument } from '@/lib/download';
 
 export function RcsDetail() {
   const { id } = useParams<{ id: string }>();
@@ -351,57 +352,18 @@ export function RcsDetail() {
     }
   };
 
+  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+
   // Download Document with Original Filename Preservation
   const handleDownload = async (doc: OnboardingDocument) => {
+    setDownloadingDocId(doc.id);
     try {
-      let downloadUrl = (doc as any).localPreviewUrl;
-      if (!downloadUrl) {
-        try {
-          const { data } = await supabase.storage
-            .from('onboarding-documents')
-            .createSignedUrl(doc.storage_path, 60, {
-              download: doc.file_name,
-            });
-          if (data?.signedUrl) {
-            downloadUrl = data.signedUrl;
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      await logAudit('document_downloaded', 'document', id, {
-        file_name: doc.file_name,
-        category: doc.category,
+      await downloadDocument(doc, {
+        recordId: id,
+        toast,
       });
-
-      if (downloadUrl) {
-        try {
-          const res = await fetch(downloadUrl);
-          const blob = await res.blob();
-          const blobUrl = URL.createObjectURL(blob);
-          const link = document.createElement('a');
-          link.href = blobUrl;
-          link.download = doc.file_name;
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-          setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
-        } catch {
-          const link = document.createElement('a');
-          link.href = downloadUrl;
-          link.download = doc.file_name;
-          link.target = '_blank';
-          document.body.appendChild(link);
-          link.click();
-          document.body.removeChild(link);
-        }
-        toast.success('Download Complete', `${doc.file_name} saved.`);
-      } else {
-        toast.info('Document Vaulted', `${doc.file_name} is securely stored.`);
-      }
-    } catch (err: any) {
-      toast.error('Download Failed', err.message || 'File download could not be completed.');
+    } finally {
+      setDownloadingDocId(null);
     }
   };
 

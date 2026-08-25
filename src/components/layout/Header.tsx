@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Menu, Search, User, LogOut, Shield, ChevronDown } from 'lucide-react';
+import { Menu, Search, User, LogOut, HelpCircle, ChevronDown, BookOpen } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { formatRoleLabel } from '@/types/database';
 
@@ -8,9 +8,10 @@ interface HeaderProps {
   title: string;
   onMenuClick: () => void;
   onSearch?: (query: string) => void;
+  onOpenGuide?: () => void;
 }
 
-export function Header({ title, onMenuClick }: HeaderProps) {
+export function Header({ title, onMenuClick, onOpenGuide }: HeaderProps) {
   const { profile, signOut } = useAuth();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState('');
@@ -34,7 +35,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
       <div className="flex items-center gap-4">
         <button
           onClick={onMenuClick}
-          className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 lg:hidden focus:outline-hidden"
+          className="p-2 text-gray-500 rounded-lg hover:bg-gray-100 lg:hidden focus:outline-hidden cursor-pointer"
           aria-label="Open sidebar"
         >
           <Menu className="w-5 h-5" />
@@ -58,12 +59,25 @@ export function Header({ title, onMenuClick }: HeaderProps) {
         </form>
       </div>
 
-      {/* Right side: User Profile dropdown */}
-      <div className="relative">
-        <button
-          onClick={() => setUserDropdownOpen(!userDropdownOpen)}
-          className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-gray-50 transition-colors focus:outline-hidden"
-        >
+      {/* Right side: Quick Guide & User Profile dropdown */}
+      <div className="flex items-center gap-3">
+        {onOpenGuide && (
+          <button
+            type="button"
+            onClick={onOpenGuide}
+            className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:text-blue-700 bg-gray-50 hover:bg-blue-50/80 border border-gray-200 hover:border-blue-200 rounded-xl transition-all shadow-2xs cursor-pointer"
+            title="Open Quick Guide / How to Use Portal"
+          >
+            <HelpCircle className="w-4 h-4 text-blue-600 shrink-0" />
+            <span className="hidden sm:inline">Help / Quick Guide</span>
+          </button>
+        )}
+
+        <div className="relative">
+          <button
+            onClick={() => setUserDropdownOpen(!userDropdownOpen)}
+            className="flex items-center gap-2.5 p-1.5 rounded-lg hover:bg-gray-50 transition-colors focus:outline-hidden cursor-pointer"
+          >
           <div className="w-8 h-8 rounded-full bg-[#071A3D] text-white flex items-center justify-center text-xs font-semibold">
             {profile?.full_name?.charAt(0).toUpperCase() || 'U'}
           </div>
@@ -100,16 +114,28 @@ export function Header({ title, onMenuClick }: HeaderProps) {
                     setUserDropdownOpen(false);
                     navigate('/profile');
                   }}
-                  className="flex items-center w-full gap-2.5 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50"
+                  className="flex items-center w-full gap-2.5 px-4 py-2 text-sm text-gray-700 hover:bg-gray-50 cursor-pointer"
                 >
                   <User className="w-4 h-4 text-gray-400" />
                   My Profile
                 </button>
+                {onOpenGuide && (
+                  <button
+                    onClick={() => {
+                      setUserDropdownOpen(false);
+                      onOpenGuide();
+                    }}
+                    className="flex items-center w-full gap-2.5 px-4 py-2 text-sm text-blue-700 hover:bg-blue-50/50 cursor-pointer font-medium"
+                  >
+                    <BookOpen className="w-4 h-4 text-blue-600" />
+                    How to Use Portal (Guide)
+                  </button>
+                )}
               </div>
               <div className="py-1">
                 <button
                   onClick={handleSignOut}
-                  className="flex items-center w-full gap-2.5 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
+                  className="flex items-center w-full gap-2.5 px-4 py-2 text-sm text-red-600 hover:bg-red-50 cursor-pointer"
                 >
                   <LogOut className="w-4 h-4 text-red-500" />
                   Sign Out
@@ -118,6 +144,7 @@ export function Header({ title, onMenuClick }: HeaderProps) {
             </div>
           </>
         )}
+        </div>
       </div>
     </header>
   );
