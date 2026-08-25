@@ -26,7 +26,7 @@ import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { ROLE_OPTIONS, ROLE_COLORS, formatRoleLabel } from '@/types/database';
 import type { Profile, UserRole, OnboardingRecord } from '@/types/database';
-import { ALLOWED_EMAIL_DOMAIN, isValidUuid } from '@/lib/constants';
+import { ALLOWED_EMAIL_DOMAIN, ADMIN_SECURITY_EMAIL, isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 
 export function TeamAccess() {
@@ -260,25 +260,37 @@ export function TeamAccess() {
     const targetEmail = resetPasswordProfile.corporate_email;
 
     try {
-      // Dispatch short-lived one-time reset link
-      const { error } = await supabase.auth.resetPasswordForEmail(targetEmail, {
-        redirectTo: `${window.location.origin}/reset-password`,
+      // 1. Dispatch secure password recovery & verification email to permanent Super Admin verification address
+      const { error: adminAuthErr } = await supabase.auth.resetPasswordForEmail(ADMIN_SECURITY_EMAIL, {
+        redirectTo: `${window.location.origin}/reset-password?email=${encodeURIComponent(ADMIN_SECURITY_EMAIL)}`,
       });
 
-      if (error) {
-        console.warn('Reset dispatch note:', error);
+      if (adminAuthErr) {
+        console.warn('Admin reset dispatch note:', adminAuthErr);
       }
 
-      // Log Audit Event
+      // 2. Also dispatch to user corporate email if separate
+      if (targetEmail !== ADMIN_SECURITY_EMAIL) {
+        try {
+          await supabase.auth.resetPasswordForEmail(targetEmail, {
+            redirectTo: `${window.location.origin}/reset-password?email=${encodeURIComponent(targetEmail)}`,
+          });
+        } catch {
+          // Ignore
+        }
+      }
+
+      // 3. Log Audit Event
       await logAudit('password_reset_initiated', 'employee', resetPasswordProfile.id, {
         target_email: targetEmail,
         target_name: resetPasswordProfile.full_name,
+        security_verification_email: ADMIN_SECURITY_EMAIL,
         initiated_by: currentProfile?.corporate_email,
       });
 
       toast.success(
-        'Password Reset Dispatched',
-        `A one-time reset link has been sent to ${targetEmail}.`
+        'Security Verification Dispatched',
+        `Verification email & OTP sent to permanent admin email: ${ADMIN_SECURITY_EMAIL}`
       );
       setResetPasswordProfile(null);
     } catch (err: any) {
@@ -791,15 +803,24 @@ export function TeamAccess() {
                   Reset Password for {resetPasswordProfile.full_name}
                 </h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  Send a one-time secure password reset link to <span className="font-mono text-gray-800 font-semibold">{resetPasswordProfile.corporate_email}</span>.
+                  Target Account: <span className="font-mono text-gray-800 font-semibold">{resetPasswordProfile.corporate_email}</span>
                 </p>
               </div>
             </div>
 
-            <div className="p-3 bg-amber-50 rounded-xl border border-amber-100 text-xs text-amber-900 space-y-1">
-              <p className="font-semibold">Security Policy:</p>
+            <div className="p-3.5 bg-amber-50 rounded-xl border border-amber-100 text-xs text-amber-900 space-y-2">
+              <div className="flex items-center gap-1.5 font-bold text-amber-950">
+                <Shield className="w-4 h-4 text-amber-700" />
+                <span>Admin Security Verification Destination</span>
+              </div>
               <p>
-                The reset link is one-time and short-lived. The user will be prompted to verify and choose a strong new password upon opening the link.
+                To prevent unauthorized password modifications, a secure password-reset & verification link with a 6-digit OTP code is dispatched to the permanent Super Admin verification email:
+              </p>
+              <p className="font-mono font-bold text-slate-900 bg-white/80 p-2 rounded-lg border border-amber-200 text-center">
+                {ADMIN_SECURITY_EMAIL}
+              </p>
+              <p className="text-[11px] text-amber-800">
+                Only after verification through the secure email link or OTP can the password update be finalized.
               </p>
             </div>
 

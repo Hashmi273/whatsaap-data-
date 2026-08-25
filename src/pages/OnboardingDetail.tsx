@@ -358,16 +358,18 @@ export function OnboardingDetail() {
     e.preventDefault();
     if (!selectedFile || !id || isUploading) return;
 
-    // Strict file type validation: Only PDF, JPG, PNG
+    // Strict file type validation: PDF, JPG, JPEG, PNG, DOCX, DOC
     const fileNameLower = selectedFile.name.toLowerCase();
     const isAllowedExt =
       fileNameLower.endsWith('.pdf') ||
       fileNameLower.endsWith('.jpg') ||
       fileNameLower.endsWith('.jpeg') ||
-      fileNameLower.endsWith('.png');
+      fileNameLower.endsWith('.png') ||
+      fileNameLower.endsWith('.docx') ||
+      fileNameLower.endsWith('.doc');
 
     if (!isAllowedExt) {
-      toast.error('Unsupported Document Type', 'Only PDF, JPG, and PNG documents are allowed in the vault.');
+      toast.error('Unsupported Document Type', 'Only PDF, JPG, PNG, and DOCX documents are allowed in the vault.');
       return;
     }
 
@@ -441,6 +443,11 @@ export function OnboardingDetail() {
         const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
         localDocs.unshift(newDocItem);
         localStorage.setItem(`immense_docs_${id}`, JSON.stringify(localDocs));
+
+        // Global vault sync
+        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
+        globalDocs.unshift(newDocItem);
+        localStorage.setItem('immense_all_vault_docs', JSON.stringify(globalDocs));
       } catch {
         // Ignore
       }
@@ -455,6 +462,8 @@ export function OnboardingDetail() {
       toast.success('Document Vaulted', `${selectedFile.name} successfully encrypted & stored.`);
       setSelectedFile(null);
       queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
+      queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+      queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
       queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
     } catch (err: any) {
       console.error('Upload error:', err);
@@ -558,6 +567,11 @@ export function OnboardingDetail() {
         const localDocs = JSON.parse(localStorage.getItem(`immense_docs_${id}`) || '[]');
         const updated = localDocs.filter((d: any) => d.id !== doc.id && d.file_name !== doc.file_name);
         localStorage.setItem(`immense_docs_${id}`, JSON.stringify(updated));
+
+        // Global vault sync
+        const globalDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
+        const updatedGlobal = globalDocs.filter((d: any) => d.id !== doc.id && d.file_name !== doc.file_name);
+        localStorage.setItem('immense_all_vault_docs', JSON.stringify(updatedGlobal));
       } catch {
         // Ignore
       }
@@ -569,6 +583,8 @@ export function OnboardingDetail() {
       toast.success('Document Removed', `${doc.file_name} deleted from vault.`);
       setDeleteDoc(null);
       queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
+      queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+      queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
       queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
     } catch (err: any) {
       toast.error('Delete Failed', err.message || 'Could not delete document.');
@@ -975,11 +991,11 @@ export function OnboardingDetail() {
               {/* File Input */}
               <div className="flex-1">
                 <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
-                  Select Document (PDF, JPG, PNG • Max 10MB)
+                  Select Document (PDF, JPG, PNG, DOCX • Max 10MB)
                 </label>
                 <input
                   type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png"
+                  accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,application/pdf,image/jpeg,image/png,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
                   onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
                   className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
                 />

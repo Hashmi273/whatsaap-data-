@@ -16,14 +16,14 @@ import {
 import { supabase } from '@/lib/supabase';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
-import { APP_NAME, APP_SUBTITLE } from '@/lib/constants';
+import { APP_NAME, APP_SUBTITLE, ADMIN_SECURITY_EMAIL } from '@/lib/constants';
 
 export function ResetPassword() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const toast = useToast();
 
-  const initialEmail = searchParams.get('email') || '';
+  const initialEmail = searchParams.get('email') || ADMIN_SECURITY_EMAIL;
   const [email, setEmail] = useState(initialEmail);
   const [otpCode, setOtpCode] = useState('');
   const [password, setPassword] = useState('');

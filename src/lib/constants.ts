@@ -9,6 +9,9 @@ export const APP_FULL_NAME = 'Immense WhatsApp Onboarding Portal';
 // Corporate email domain — also enforced server-side via DB trigger
 export const ALLOWED_EMAIL_DOMAIN = import.meta.env.VITE_ALLOWED_EMAIL_DOMAIN || 'immensesmartsolutions.com';
 
+// Permanent Super Admin Security & Verification Destination
+export const ADMIN_SECURITY_EMAIL = 'hashmimdparvej78654@gmail.com';
+
 // UUID validation helper
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function isValidUuid(str?: string | null): boolean {

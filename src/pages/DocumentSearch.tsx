@@ -55,6 +55,14 @@ export function DocumentSearch() {
   const { data: documents, isLoading } = useQuery({
     queryKey: ['global-documents-search'],
     queryFn: async () => {
+      let localDocs: any[] = [];
+      try {
+        localDocs = JSON.parse(localStorage.getItem('immense_all_vault_docs') || '[]');
+      } catch {
+        // Ignore
+      }
+
+      let dbDocs: DocumentWithRelations[] = [];
       try {
         const { data, error } = await supabase
           .from('onboarding_documents')
@@ -65,11 +73,25 @@ export function DocumentSearch() {
           `)
           .order('created_at', { ascending: false });
 
-        if (!error && data && data.length > 0) return data as DocumentWithRelations[];
+        if (!error && data && data.length > 0) {
+          dbDocs = data as DocumentWithRelations[];
+        }
       } catch {
         // Fallback
       }
-      return INITIAL_DEMO_DOCUMENTS as unknown as DocumentWithRelations[];
+
+      const merged = [...localDocs];
+      dbDocs.forEach((d) => {
+        if (!merged.some((m) => m.id === d.id || m.file_name === d.file_name)) {
+          merged.push(d);
+        }
+      });
+
+      if (merged.length === 0) {
+        return INITIAL_DEMO_DOCUMENTS as unknown as DocumentWithRelations[];
+      }
+
+      return merged as DocumentWithRelations[];
     },
   });
 
