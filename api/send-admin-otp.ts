@@ -146,11 +146,14 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     // 4. Dispatch Email via Transactional Provider
     let emailSent = false;
     let providerError = '';
+    let messageId = '';
 
     // Check Resend Provider
     const resendApiKey = process.env.RESEND_API_KEY;
     if (resendApiKey) {
       try {
+        const fromAddress =
+          process.env.EMAIL_FROM || 'IMMENSE Security <onboarding@resend.dev>';
         const resendRes = await fetch('https://api.resend.com/emails', {
           method: 'POST',
           headers: {
@@ -158,7 +161,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            from: process.env.EMAIL_FROM || 'IMMENSE Security <security@immensesmartsolutions.com>',
+            from: fromAddress,
             to: [ADMIN_SECURITY_EMAIL],
             subject,
             html: htmlContent,
@@ -166,6 +169,8 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         });
 
         if (resendRes.ok) {
+          const resData = await resendRes.json().catch(() => ({}));
+          messageId = resData?.id || '';
           emailSent = true;
         } else {
           const errData = await resendRes.json().catch(() => ({}));
