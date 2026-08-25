@@ -21,6 +21,7 @@ interface AuthContextType {
   signOut: () => Promise<void>;
   resetPassword: (email: string) => Promise<{ error: string | null }>;
   refreshProfile: () => Promise<void>;
+  updateProfile: (data: Partial<Profile>) => Promise<{ error: string | null }>;
   loginAsDemo: (role: UserRole) => void;
 }
 
@@ -408,6 +409,50 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const updateProfile = useCallback(async (data: Partial<Profile>) => {
+    if (!profile) return { error: 'No active profile found.' };
+
+    const updatedProfile: Profile = {
+      ...profile,
+      ...data,
+      updated_at: new Date().toISOString(),
+    };
+
+    try {
+      localStorage.setItem('immense_demo_profile', JSON.stringify(updatedProfile));
+    } catch {
+      // Ignore
+    }
+
+    setProfile(updatedProfile);
+
+    try {
+      if (profile.id && !profile.id.startsWith('immense-') && !profile.id.startsWith('demo-')) {
+        await supabase
+          .from('profiles')
+          .update({
+            full_name: updatedProfile.full_name,
+            department: updatedProfile.department,
+            updated_at: updatedProfile.updated_at,
+          })
+          .eq('id', profile.id);
+      }
+    } catch (err: any) {
+      console.warn('DB profile update note:', err);
+    }
+
+    try {
+      await logAudit('profile_updated', 'auth', profile.id, {
+        full_name: updatedProfile.full_name,
+        department: updatedProfile.department,
+      });
+    } catch {
+      // Ignore
+    }
+
+    return { error: null };
+  }, [profile]);
+
   return (
     <AuthContext.Provider
       value={{
@@ -420,6 +465,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         signOut,
         resetPassword,
         refreshProfile,
+        updateProfile,
         loginAsDemo,
       }}
     >

@@ -28,7 +28,8 @@ export type AuditAction =
   | 'password_reset_requested'
   | 'password_reset_initiated'
   | 'password_reset_completed'
-  | 'password_changed_own';
+  | 'password_changed_own'
+  | 'profile_updated';
 
 export type EntityType = 'onboarding' | 'document' | 'employee' | 'credential' | 'auth' | 'system';
 

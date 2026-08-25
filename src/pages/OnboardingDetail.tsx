@@ -479,28 +479,29 @@ export function OnboardingDetail() {
   // Generate Temporary Signed URL for Preview
   const handlePreview = async (doc: OnboardingDocument) => {
     try {
-      if ((doc as any).localPreviewUrl) {
+      if (doc.storage_path) {
+        const { data, error } = await supabase.storage
+          .from('onboarding-documents')
+          .createSignedUrl(doc.storage_path, 3600); // 1 hour token
+
+        if (!error && data?.signedUrl) {
+          setPreviewDoc(doc);
+          setPreviewSignedUrl(data.signedUrl);
+          return;
+        }
+      }
+
+      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string' && (doc as any).localPreviewUrl.startsWith('data:')) {
         setPreviewDoc(doc);
         setPreviewSignedUrl((doc as any).localPreviewUrl);
         return;
       }
 
-      const { data, error } = await supabase.storage
-        .from('onboarding-documents')
-        .createSignedUrl(doc.storage_path, 3600); // 1 hour token
-
-      if (!error && data?.signedUrl) {
-        setPreviewDoc(doc);
-        setPreviewSignedUrl(data.signedUrl);
-        return;
-      }
-
-      // Fallback
       setPreviewDoc(doc);
-      setPreviewSignedUrl('https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg');
+      setPreviewSignedUrl('/logo.jpg');
     } catch {
       setPreviewDoc(doc);
-      setPreviewSignedUrl('https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg');
+      setPreviewSignedUrl('/logo.jpg');
     }
   };
 

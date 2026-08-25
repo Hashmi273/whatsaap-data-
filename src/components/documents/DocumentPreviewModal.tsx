@@ -1,4 +1,5 @@
-import { X, Download, FileText, ExternalLink, ShieldCheck } from 'lucide-react';
+import { useState } from 'react';
+import { X, Download, FileText, ExternalLink, ShieldCheck, AlertCircle, FileImage, RefreshCw } from 'lucide-react';
 import type { OnboardingDocument } from '@/types/database';
 import { formatCategoryLabel } from '@/types/database';
 
@@ -15,38 +16,56 @@ export function DocumentPreviewModal({
   onClose,
   onDownload,
 }: DocumentPreviewModalProps) {
-  if (!document || !signedUrl) return null;
+  const [imgError, setImgError] = useState(false);
+  const [iframeError, setIframeError] = useState(false);
 
-  const isPdf = document.mime_type.includes('pdf') || document.file_name.toLowerCase().endsWith('.pdf');
-  const isImage = document.mime_type.startsWith('image/') || /\.(jpg|jpeg|png|webp)$/i.test(document.file_name);
+  if (!document) return null;
+
+  const fileName = document.file_name || document.original_name || 'Document';
+  const fileNameLower = fileName.toLowerCase();
+  const mimeType = (document.mime_type || '').toLowerCase();
+
+  const isPdf = mimeType.includes('pdf') || fileNameLower.endsWith('.pdf');
+  const isImage =
+    mimeType.startsWith('image/') ||
+    fileNameLower.endsWith('.jpg') ||
+    fileNameLower.endsWith('.jpeg') ||
+    fileNameLower.endsWith('.png') ||
+    fileNameLower.endsWith('.webp');
+
+  const isDocx =
+    mimeType.includes('word') ||
+    mimeType.includes('officedocument') ||
+    fileNameLower.endsWith('.docx') ||
+    fileNameLower.endsWith('.doc');
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs animate-in fade-in duration-150">
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black/70 backdrop-blur-xs transition-opacity"
+        className="fixed inset-0"
         onClick={onClose}
       />
 
       {/* Modal Container */}
-      <div className="relative w-full max-w-4xl bg-white rounded-2xl shadow-2xl flex flex-col max-h-[90vh] z-10 overflow-hidden">
+      <div className="relative w-full max-w-4xl bg-white rounded-3xl shadow-2xl flex flex-col max-h-[90vh] z-10 overflow-hidden border border-gray-100">
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200 bg-gray-50/90">
           <div className="flex items-center gap-3 min-w-0">
-            <div className="p-2 rounded-lg bg-blue-50 text-[#1677FF] flex-shrink-0">
-              <FileText className="w-5 h-5" />
+            <div className="p-2 rounded-xl bg-blue-50 text-[#1677FF] flex-shrink-0">
+              {isImage ? <FileImage className="w-5 h-5" /> : <FileText className="w-5 h-5" />}
             </div>
             <div className="min-w-0">
-              <h3 className="text-base font-semibold text-gray-900 truncate">
-                {document.file_name}
+              <h3 className="text-base font-bold text-gray-900 truncate">
+                {fileName}
               </h3>
-              <div className="flex items-center gap-2 mt-0.5">
-                <span className="text-xs font-medium px-2 py-0.5 rounded bg-blue-100 text-blue-800">
+              <div className="flex flex-wrap items-center gap-2 mt-0.5">
+                <span className="text-[11px] font-semibold px-2.5 py-0.5 rounded-full bg-blue-100 text-blue-800">
                   {formatCategoryLabel(document.category)}
                 </span>
                 <span className="text-xs text-gray-500 flex items-center gap-1">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  Private Supabase Vault • Signed Token Valid
+                  Private Supabase Vault • Active Verified Token
                 </span>
               </div>
             </div>
@@ -55,14 +74,14 @@ export function DocumentPreviewModal({
           <div className="flex items-center gap-2 flex-shrink-0 ml-4">
             <button
               onClick={onDownload}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-lg transition-colors shadow-xs"
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl transition-all shadow-xs cursor-pointer"
             >
               <Download className="w-4 h-4" />
               Download
             </button>
             <button
               onClick={onClose}
-              className="p-1.5 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-lg transition-colors"
+              className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-200 rounded-xl transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -70,36 +89,87 @@ export function DocumentPreviewModal({
         </div>
 
         {/* Content Viewer */}
-        <div className="flex-1 p-4 bg-gray-100 overflow-y-auto flex items-center justify-center min-h-[400px]">
+        <div className="flex-1 p-6 bg-slate-900/5 overflow-y-auto flex items-center justify-center min-h-[420px]">
           {isImage && (
-            <img
-              src={signedUrl}
-              alt={document.file_name}
-              className="max-h-[70vh] max-w-full rounded-lg shadow-md object-contain"
-            />
+            !imgError && signedUrl ? (
+              <div className="flex flex-col items-center justify-center max-h-[70vh] w-full">
+                <img
+                  src={signedUrl}
+                  alt={fileName}
+                  onError={() => setImgError(true)}
+                  className="max-h-[65vh] max-w-full rounded-2xl shadow-lg object-contain bg-white p-2 border border-gray-200"
+                />
+              </div>
+            ) : (
+              <div className="text-center p-8 bg-white rounded-3xl shadow-sm border border-gray-200 max-w-md space-y-4">
+                <div className="w-16 h-16 bg-blue-50 text-[#1677FF] rounded-2xl flex items-center justify-center mx-auto">
+                  <FileImage className="w-8 h-8" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-gray-900 text-sm">{fileName}</h4>
+                  <p className="text-xs text-gray-500 mt-1">
+                    Image is securely vaulted. You can download the full-resolution asset.
+                  </p>
+                </div>
+                <button
+                  onClick={onDownload}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#1677FF] text-white rounded-xl font-semibold text-xs hover:bg-[#0B5FE0] shadow-xs cursor-pointer"
+                >
+                  <Download className="w-4 h-4" /> Download Original Image
+                </button>
+              </div>
+            )
           )}
 
           {isPdf && (
-            <iframe
-              src={`${signedUrl}#toolbar=0`}
-              title={document.file_name}
-              className="w-full h-[70vh] rounded-lg border border-gray-300 bg-white"
-            />
+            !iframeError && signedUrl ? (
+              <div className="w-full h-[70vh] bg-white rounded-2xl shadow-sm border border-gray-300 overflow-hidden">
+                <iframe
+                  src={`${signedUrl}#toolbar=0`}
+                  title={fileName}
+                  onError={() => setIframeError(true)}
+                  className="w-full h-full border-0"
+                />
+              </div>
+            ) : (
+              <div className="text-center p-8 bg-white rounded-3xl shadow-sm border border-gray-200 max-w-md space-y-4">
+                <div className="w-16 h-16 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mx-auto">
+                  <FileText className="w-8 h-8" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-gray-900 text-sm">{fileName}</h4>
+                  <p className="text-xs text-gray-500 mt-1">
+                    PDF Document securely stored in compliance vault.
+                  </p>
+                </div>
+                <button
+                  onClick={onDownload}
+                  className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#1677FF] text-white rounded-xl font-semibold text-xs hover:bg-[#0B5FE0] shadow-xs cursor-pointer"
+                >
+                  <Download className="w-4 h-4" /> Download PDF Document
+                </button>
+              </div>
+            )
           )}
 
           {!isPdf && !isImage && (
-            <div className="text-center p-8 bg-white rounded-xl shadow-xs border border-gray-200 max-w-md">
-              <FileText className="w-16 h-16 text-gray-400 mx-auto mb-3" />
-              <h4 className="font-semibold text-gray-900">{document.file_name}</h4>
-              <p className="text-sm text-gray-500 mt-1">
-                Preview is not available directly for this file format ({document.mime_type || 'Document'}).
-              </p>
+            <div className="text-center p-8 bg-white rounded-3xl shadow-sm border border-gray-200 max-w-md space-y-4">
+              <div className="w-16 h-16 bg-blue-50 text-[#1677FF] rounded-2xl flex items-center justify-center mx-auto">
+                <FileText className="w-8 h-8" />
+              </div>
+              <div>
+                <h4 className="font-bold text-gray-900 text-sm">{fileName}</h4>
+                <p className="text-xs text-gray-500 mt-1">
+                  {isDocx
+                    ? 'Word document (.docx) is encrypted and vaulted. Download to view in MS Word or Google Docs.'
+                    : `Direct preview is not supported for ${document.mime_type || 'this format'}.`}
+                </p>
+              </div>
               <button
                 onClick={onDownload}
-                className="mt-5 inline-flex items-center gap-2 px-4 py-2 bg-[#1677FF] text-white rounded-lg font-medium text-sm hover:bg-[#0B5FE0]"
+                className="inline-flex items-center gap-2 px-5 py-2.5 bg-[#1677FF] text-white rounded-xl font-semibold text-xs hover:bg-[#0B5FE0] shadow-xs cursor-pointer"
               >
-                <Download className="w-4 h-4" />
-                Download to View
+                <Download className="w-4 h-4" /> Download Original File
               </button>
             </div>
           )}

@@ -325,27 +325,29 @@ export function RcsDetail() {
   // Preview Document
   const handlePreview = async (doc: OnboardingDocument) => {
     try {
-      if ((doc as any).localPreviewUrl) {
+      if (doc.storage_path) {
+        const { data, error } = await supabase.storage
+          .from('onboarding-documents')
+          .createSignedUrl(doc.storage_path, 3600);
+
+        if (!error && data?.signedUrl) {
+          setPreviewDoc(doc);
+          setPreviewSignedUrl(data.signedUrl);
+          return;
+        }
+      }
+
+      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string' && (doc as any).localPreviewUrl.startsWith('data:')) {
         setPreviewDoc(doc);
         setPreviewSignedUrl((doc as any).localPreviewUrl);
         return;
       }
 
-      const { data, error } = await supabase.storage
-        .from('onboarding-documents')
-        .createSignedUrl(doc.storage_path, 3600);
-
-      if (!error && data?.signedUrl) {
-        setPreviewDoc(doc);
-        setPreviewSignedUrl(data.signedUrl);
-        return;
-      }
-
       setPreviewDoc(doc);
-      setPreviewSignedUrl('https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg');
+      setPreviewSignedUrl('/logo.jpg');
     } catch {
       setPreviewDoc(doc);
-      setPreviewSignedUrl('https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg');
+      setPreviewSignedUrl('/logo.jpg');
     }
   };
 
@@ -596,8 +598,11 @@ export function RcsDetail() {
                 {logoDoc ? (
                   <>
                     <img
-                      src={(logoDoc as any).localPreviewUrl || 'https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg'}
+                      src={(logoDoc as any).localPreviewUrl || '/logo.jpg'}
                       alt="RCS Logo"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/logo.jpg';
+                      }}
                       className="max-h-full max-w-full object-contain rounded-lg shadow-2xs"
                     />
                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 rounded-xl backdrop-blur-2xs">
@@ -695,8 +700,11 @@ export function RcsDetail() {
                 {bannerDoc ? (
                   <>
                     <img
-                      src={(bannerDoc as any).localPreviewUrl || 'https://raw.githubusercontent.com/Hashmi273/whatsaap-data-/main/public/logo.jpg'}
+                      src={(bannerDoc as any).localPreviewUrl || '/logo.jpg'}
                       alt="RCS Banner"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = '/logo.jpg';
+                      }}
                       className="h-full w-full object-cover rounded-lg shadow-2xs"
                     />
                     <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 rounded-xl backdrop-blur-2xs">

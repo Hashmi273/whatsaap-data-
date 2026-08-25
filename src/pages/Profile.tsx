@@ -23,7 +23,7 @@ import { formatRoleLabel, ROLE_COLORS } from '@/types/database';
 import { format } from 'date-fns';
 
 export function Profile() {
-  const { profile, refreshProfile, resetPassword } = useAuth();
+  const { profile, updateProfile, resetPassword } = useAuth();
   const toast = useToast();
 
   const [isSaving, setIsSaving] = useState(false);
@@ -48,29 +48,30 @@ export function Profile() {
     e.preventDefault();
     if (!profile) return;
 
+    if (!fullName.trim()) {
+      toast.error('Validation Error', 'Full Name cannot be empty.');
+      return;
+    }
+
     setIsSaving(true);
     try {
       const updateData: any = {
         full_name: fullName.trim(),
         department: department.trim(),
-        updated_at: new Date().toISOString(),
       };
 
       if (mobileNumber) {
         updateData.mobile_number = mobileNumber.trim();
       }
 
-      const { error } = await supabase
-        .from('profiles')
-        .update(updateData)
-        .eq('id', profile.id);
+      const res = await updateProfile(updateData);
+      if (res.error) {
+        throw new Error(res.error);
+      }
 
-      if (error) throw error;
-
-      await refreshProfile();
-      toast.success('Profile Saved', 'Personal information updated.');
+      toast.success('Profile Saved', 'Personal information updated successfully.');
     } catch (err: any) {
-      toast.error('Update Failed', err.message);
+      toast.error('Update Failed', err.message || 'Could not update profile.');
     } finally {
       setIsSaving(false);
     }
