@@ -30,15 +30,21 @@ async function resolveGoogleDriveToken(): Promise<{
   error?: string;
   code?: string;
   diagnostics: {
-    appConfigLoaded: boolean;
-    hasAccessToken: boolean;
-    hasRefreshToken: boolean;
-    hasEmail: boolean;
-    tokenExpiry: string;
-    accessTokenValidationStatus: number | string;
+    supabaseUrlConfigured: boolean;
+    serviceRoleConfigured: boolean;
+    appConfigRequestStatus: number | string;
+    appConfigRowsCount: number;
+    refreshTokenRowFound: boolean;
+    accessTokenRowFound: boolean;
+    emailRowFound: boolean;
+    expiryRowFound: boolean;
+    accessTokenLength: number;
+    refreshTokenLength: number;
+    accessTokenGoogleValidationStatus: number | string;
     refreshAttempted: boolean;
     refreshResponseStatus: number | string;
-    finalAuthenticationStatus: 'success' | 'failure';
+    tokenResolutionResult: 'success' | 'failure';
+    failureReason: string;
   };
 }> {
   const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
@@ -49,18 +55,23 @@ async function resolveGoogleDriveToken(): Promise<{
   let accessToken = '';
   let tokenExpiryIso = '';
   let userEmail = (process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com').trim();
-  let appConfigLoaded = false;
 
   const diagnostics = {
-    appConfigLoaded: false,
-    hasAccessToken: false,
-    hasRefreshToken: false,
-    hasEmail: false,
-    tokenExpiry: 'none',
-    accessTokenValidationStatus: 'none' as number | string,
+    supabaseUrlConfigured: Boolean(supabaseUrl),
+    serviceRoleConfigured: Boolean(supabaseServiceKey),
+    appConfigRequestStatus: 'not_attempted' as number | string,
+    appConfigRowsCount: 0,
+    refreshTokenRowFound: false,
+    accessTokenRowFound: false,
+    emailRowFound: false,
+    expiryRowFound: false,
+    accessTokenLength: 0,
+    refreshTokenLength: refreshToken.length,
+    accessTokenGoogleValidationStatus: 'not_attempted' as number | string,
     refreshAttempted: false,
-    refreshResponseStatus: 'none' as number | string,
-    finalAuthenticationStatus: 'failure' as 'success' | 'failure',
+    refreshResponseStatus: 'not_attempted' as number | string,
+    tokenResolutionResult: 'failure' as 'success' | 'failure',
+    failureReason: 'uninitialized',
   };
 
   // 1. Read app_config from PostgreSQL
@@ -73,29 +84,48 @@ async function resolveGoogleDriveToken(): Promise<{
         },
       });
 
+      diagnostics.appConfigRequestStatus = configRes.status;
+
       if (configRes.ok) {
-        appConfigLoaded = true;
         const configRows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
-        const tokenRow = configRows.find((r) => r.key === 'google_drive_refresh_token');
-        const accessRow = configRows.find((r) => r.key === 'google_drive_access_token');
-        const emailRow = configRows.find((r) => r.key === 'google_drive_email');
-        const expiryRow = configRows.find((r) => r.key === 'google_drive_token_expires_at');
+        diagnostics.appConfigRowsCount = Array.isArray(configRows) ? configRows.length : 0;
 
-        if (tokenRow?.value) refreshToken = tokenRow.value.trim();
-        if (accessRow?.value) accessToken = accessRow.value.trim();
-        if (emailRow?.value) userEmail = emailRow.value.trim();
-        if (expiryRow?.value) tokenExpiryIso = expiryRow.value.trim();
+        if (Array.isArray(configRows)) {
+          const tokenRow = configRows.find((r) => r.key === 'google_drive_refresh_token');
+          const accessRow = configRows.find((r) => r.key === 'google_drive_access_token');
+          const emailRow = configRows.find((r) => r.key === 'google_drive_email');
+          const expiryRow = configRows.find((r) => r.key === 'google_drive_token_expires_at');
+
+          if (tokenRow?.value) {
+            refreshToken = tokenRow.value.trim();
+            diagnostics.refreshTokenRowFound = true;
+            diagnostics.refreshTokenLength = refreshToken.length;
+          }
+          if (accessRow?.value) {
+            accessToken = accessRow.value.trim();
+            diagnostics.accessTokenRowFound = true;
+            diagnostics.accessTokenLength = accessToken.length;
+          }
+          if (emailRow?.value) {
+            userEmail = emailRow.value.trim();
+            diagnostics.emailRowFound = true;
+          }
+          if (expiryRow?.value) {
+            tokenExpiryIso = expiryRow.value.trim();
+            diagnostics.expiryRowFound = true;
+          }
+        }
+      } else {
+        const errText = await configRes.text().catch(() => '');
+        diagnostics.failureReason = `app_config request failed with HTTP ${configRes.status}: ${errText.slice(0, 100)}`;
       }
-    } catch {
-      appConfigLoaded = false;
+    } catch (dbErr: any) {
+      diagnostics.appConfigRequestStatus = 'network_error';
+      diagnostics.failureReason = `app_config query network error: ${dbErr.message}`;
     }
+  } else {
+    diagnostics.failureReason = 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY missing in environment.';
   }
-
-  diagnostics.appConfigLoaded = appConfigLoaded;
-  diagnostics.hasAccessToken = Boolean(accessToken);
-  diagnostics.hasRefreshToken = Boolean(refreshToken);
-  diagnostics.hasEmail = Boolean(userEmail);
-  diagnostics.tokenExpiry = tokenExpiryIso || 'none';
 
   // 2. If access token exists, probe Google Drive API
   if (accessToken) {
@@ -104,37 +134,41 @@ async function resolveGoogleDriveToken(): Promise<{
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
-      diagnostics.accessTokenValidationStatus = aboutRes.status;
+      diagnostics.accessTokenGoogleValidationStatus = aboutRes.status;
 
       if (aboutRes.ok) {
         const aboutData: any = (await aboutRes.json().catch(() => ({}))) as any;
         if (aboutData.user?.emailAddress) {
           userEmail = aboutData.user.emailAddress;
         }
-        diagnostics.finalAuthenticationStatus = 'success';
+        diagnostics.tokenResolutionResult = 'success';
+        diagnostics.failureReason = 'none';
         return { token: accessToken, email: userEmail, diagnostics };
       }
 
       if (aboutRes.status === 403) {
-        diagnostics.finalAuthenticationStatus = 'failure';
+        diagnostics.tokenResolutionResult = 'failure';
+        diagnostics.failureReason = 'Google Drive permission denied (HTTP 403). Verify scopes.';
         return {
           token: null,
           email: userEmail,
-          error: 'Google Drive permission denied (HTTP 403). Verify OAuth scopes in Google Cloud Console.',
+          error: 'Google Drive permission denied (HTTP 403). Check OAuth scopes in Google Cloud Console.',
           code: 'DRIVE_PERMISSION_DENIED',
           diagnostics,
         };
       } else if (aboutRes.status === 429) {
-        diagnostics.finalAuthenticationStatus = 'failure';
+        diagnostics.tokenResolutionResult = 'failure';
+        diagnostics.failureReason = 'Google Drive rate limit (HTTP 429).';
         return {
           token: null,
           email: userEmail,
-          error: 'Google Drive rate limit exceeded (HTTP 429). Please retry in a few moments.',
+          error: 'Google Drive rate limit exceeded (HTTP 429). Please retry shortly.',
           code: 'DRIVE_RATE_LIMIT',
           diagnostics,
         };
       } else if (aboutRes.status >= 500) {
-        diagnostics.finalAuthenticationStatus = 'failure';
+        diagnostics.tokenResolutionResult = 'failure';
+        diagnostics.failureReason = `Google Drive API server error (HTTP ${aboutRes.status}).`;
         return {
           token: null,
           email: userEmail,
@@ -144,7 +178,7 @@ async function resolveGoogleDriveToken(): Promise<{
         };
       }
     } catch (testErr: any) {
-      diagnostics.accessTokenValidationStatus = testErr.message || 'network_error';
+      diagnostics.accessTokenGoogleValidationStatus = 'error';
     }
   }
 
@@ -188,12 +222,14 @@ async function resolveGoogleDriveToken(): Promise<{
           }).catch(() => {});
         }
 
-        diagnostics.finalAuthenticationStatus = 'success';
+        diagnostics.tokenResolutionResult = 'success';
+        diagnostics.failureReason = 'none';
         return { token: freshToken, email: userEmail, diagnostics };
       }
 
-      diagnostics.finalAuthenticationStatus = 'failure';
+      diagnostics.tokenResolutionResult = 'failure';
       const errMsg = tokenData.error_description || tokenData.error || 'Failed to exchange refresh token with Google.';
+      diagnostics.failureReason = `Refresh token exchange failed (HTTP ${tokenRes.status}): ${errMsg}`;
       return {
         token: null,
         email: userEmail,
@@ -202,7 +238,8 @@ async function resolveGoogleDriveToken(): Promise<{
         diagnostics,
       };
     } catch (refreshErr: any) {
-      diagnostics.finalAuthenticationStatus = 'failure';
+      diagnostics.tokenResolutionResult = 'failure';
+      diagnostics.failureReason = `Refresh request network error: ${refreshErr.message}`;
       return {
         token: null,
         email: userEmail,
@@ -213,7 +250,12 @@ async function resolveGoogleDriveToken(): Promise<{
     }
   }
 
-  diagnostics.finalAuthenticationStatus = 'failure';
+  // 4. Genuine not connected state
+  diagnostics.tokenResolutionResult = 'failure';
+  if (!diagnostics.failureReason || diagnostics.failureReason === 'uninitialized') {
+    diagnostics.failureReason = 'Neither valid access token nor refresh token found in database or environment.';
+  }
+
   return {
     token: null,
     email: userEmail,
@@ -324,7 +366,7 @@ async function uploadFileToDrive(
     }
   );
 
-  const uploadData: any = (await uploadRes.json().catch(() => ({}))) as any;
+  const uploadData: any = (await uploadRes.json()) as any;
   if (!uploadRes.ok || !uploadData?.id) {
     throw new Error(`Drive file upload failed for "${fileName}": ${uploadData?.error?.message || uploadRes.statusText}`);
   }
@@ -337,7 +379,7 @@ async function uploadFileToDrive(
     }
   );
 
-  const verifyData: any = (await verifyRes.json().catch(() => ({}))) as any;
+  const verifyData: any = (await verifyRes.json()) as any;
   if (!verifyRes.ok || !verifyData?.id) {
     throw new Error(`Drive post-upload verification failed for "${fileName}": ${verifyData?.error?.message || verifyRes.statusText}`);
   }
@@ -392,32 +434,30 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     // Stage 1: Authenticate with Google Drive OAuth
     const { token: accessToken, email: connectedEmail, error: authError, code: authCode, diagnostics } = await resolveGoogleDriveToken();
 
-    console.log(`[GDRIVE-BACKUP]
-requestStarted=true
-authResolution=${diagnostics.finalAuthenticationStatus}
-hasAccessToken=${diagnostics.hasAccessToken}
-hasRefreshToken=${diagnostics.hasRefreshToken}
-tokenExpiry=${diagnostics.tokenExpiry}
-accessTokenValidationStatus=${diagnostics.accessTokenValidationStatus}
-refreshAttempted=${diagnostics.refreshAttempted}
-refreshResponseStatus=${diagnostics.refreshResponseStatus}`);
+    console.log(`[GDRIVE-BACKUP-DIAGNOSTIC]
+supabaseUrlConfigured=${diagnostics.supabaseUrlConfigured}
+serviceRoleConfigured=${diagnostics.serviceRoleConfigured}
+appConfigRequestStatus=${diagnostics.appConfigRequestStatus}
+appConfigRowsCount=${diagnostics.appConfigRowsCount}
+refreshTokenRowFound=${diagnostics.refreshTokenRowFound}
+accessTokenRowFound=${diagnostics.accessTokenRowFound}
+emailRowFound=${diagnostics.emailRowFound}
+expiryRowFound=${diagnostics.expiryRowFound}
+accessTokenLength=${diagnostics.accessTokenLength}
+refreshTokenLength=${diagnostics.refreshTokenLength}
+accessTokenGoogleValidationStatus=${diagnostics.accessTokenGoogleValidationStatus}
+tokenResolutionResult=${diagnostics.tokenResolutionResult}
+failureReason=${diagnostics.failureReason}`);
 
-    if (!accessToken || diagnostics.finalAuthenticationStatus !== 'success') {
+    if (!accessToken || diagnostics.tokenResolutionResult !== 'success') {
       res.statusCode = 400;
       res.setHeader('Content-Type', 'application/json');
       res.end(
         JSON.stringify({
           success: false,
           error: authError || 'Google Drive is not connected. Please click "Connect Google Drive" in Settings first.',
-          code: authCode || 'AUTHENTICATION_FAILED',
-          diagnostics: {
-            appConfigLoaded: diagnostics.appConfigLoaded,
-            hasAccessToken: diagnostics.hasAccessToken,
-            hasRefreshToken: diagnostics.hasRefreshToken,
-            validationStatus: diagnostics.accessTokenValidationStatus,
-            refreshAttempted: diagnostics.refreshAttempted,
-            refreshStatus: diagnostics.refreshResponseStatus,
-          },
+          code: authCode || 'NOT_CONNECTED',
+          diagnostics,
         })
       );
       return;
@@ -499,7 +539,6 @@ refreshResponseStatus=${diagnostics.refreshResponseStatus}`);
       driveUrl: string;
     }> = [];
     const failedFiles: Array<{ fileName: string; company: string; error: string; code?: string }> = [];
-    let totalDocsCount = 0;
 
     // Stage 4: Process Company Folders and Upload Documents
     for (const rec of recordsToProcess) {
@@ -551,8 +590,6 @@ refreshResponseStatus=${diagnostics.refreshResponseStatus}`);
         });
         continue;
       }
-
-      totalDocsCount += docs.length;
 
       for (const doc of docs) {
         const catKey = (doc.category || '').toLowerCase();
@@ -631,17 +668,6 @@ refreshResponseStatus=${diagnostics.refreshResponseStatus}`);
         }
       }
     }
-
-    console.log(`[GDRIVE-BACKUP]
-requestStarted=true
-authResolution=success
-documentResolution=success
-documentCount=${totalDocsCount}
-folderCreation=success
-uploadStarted=true
-uploadedCount=${verifiedFiles.length}
-verifiedCount=${verifiedFiles.length}
-finalStatus=${failedFiles.length === 0 || verifiedFiles.length > 0 ? 'success' : 'failure'}`);
 
     const nowIso = new Date().toISOString();
     const finalAccount = connectedEmail || process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com';
