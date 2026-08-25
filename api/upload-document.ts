@@ -60,6 +60,9 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
+    const cleanPath = (storagePath.startsWith('/') ? storagePath.slice(1) : storagePath).trim();
+    const fileBuffer = Buffer.from(fileBase64, 'base64');
+
     const authHeader = (req.headers['authorization'] || '').toString().trim();
     const tokenFromHeader = authHeader.replace(/^Bearer\s+/i, '').trim();
 
@@ -90,9 +93,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       );
       return;
     }
-
-    const cleanPath = storagePath.startsWith('/') ? storagePath.slice(1) : storagePath;
-    const fileBuffer = Buffer.from(fileBase64, 'base64');
 
     const headers: Record<string, string> = {
       'Content-Type': contentType,
