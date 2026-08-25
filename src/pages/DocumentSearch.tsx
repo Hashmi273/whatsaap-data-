@@ -169,13 +169,27 @@ export function DocumentSearch() {
       });
 
       if (downloadUrl) {
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = doc.file_name;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
-        toast.success('Download Dispatched', `${doc.file_name} signed download started.`);
+        try {
+          const res = await fetch(downloadUrl);
+          const blob = await res.blob();
+          const blobUrl = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.href = blobUrl;
+          link.download = doc.file_name;
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+          setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        } catch {
+          const link = document.createElement('a');
+          link.href = downloadUrl;
+          link.download = doc.file_name;
+          link.target = '_blank';
+          document.body.appendChild(link);
+          link.click();
+          document.body.removeChild(link);
+        }
+        toast.success('Download Complete', `${doc.file_name} saved.`);
       } else {
         toast.info('Document Vaulted', `${doc.file_name} is securely stored.`);
       }

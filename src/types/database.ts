@@ -8,9 +8,14 @@ export type UserRole = 'super_admin' | 'manager' | 'employee' | 'viewer';
 export type OnboardingStatus = 'pending' | 'in_progress' | 'live' | 'rejected' | 'completed' | 'inactive';
 
 export type DocumentCategory =
+  | 'logo'
+  | 'banner_creative'
   | 'gst_certificate'
+  | 'pan_card'
   | 'pan'
+  | 'kyc_document'
   | 'kyc'
+  | 'meta_verification'
   | 'whatsapp_approval'
   | 'meta_documents'
   | 'business_documents'
@@ -121,9 +126,12 @@ export const STATUS_OPTIONS: SelectOption[] = [
 ];
 
 export const CATEGORY_OPTIONS: SelectOption[] = [
+  { value: 'logo', label: 'Logo' },
+  { value: 'banner_creative', label: 'Banner / Creative' },
   { value: 'gst_certificate', label: 'GST Certificate' },
-  { value: 'pan', label: 'PAN' },
-  { value: 'kyc', label: 'KYC' },
+  { value: 'pan_card', label: 'PAN Card' },
+  { value: 'kyc_document', label: 'KYC Document' },
+  { value: 'meta_verification', label: 'Meta/Facebook Verification' },
   { value: 'whatsapp_approval', label: 'WhatsApp Approval' },
   { value: 'meta_documents', label: 'Meta Documents' },
   { value: 'business_documents', label: 'Business Documents' },
