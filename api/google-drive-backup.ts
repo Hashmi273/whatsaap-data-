@@ -8,10 +8,12 @@ async function getGoogleAccessToken(
   const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
   const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
   let refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
+  let accessToken = '';
+  let tokenExpiresAt = 0;
   let userEmail = (process.env.GOOGLE_BACKUP_EMAIL || 'parvejweb1@gmail.com').trim();
 
   // 1. Check Supabase app_config for stored Google OAuth tokens
-  if ((!refreshToken || refreshToken === '') && supabaseUrl && supabaseServiceKey) {
+  if (supabaseUrl && supabaseServiceKey) {
     try {
       const configRes = await fetch(`${supabaseUrl}/rest/v1/app_config?select=key,value`, {
         headers: {
@@ -22,16 +24,26 @@ async function getGoogleAccessToken(
       if (configRes.ok) {
         const rows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
         const tokenRow = rows.find((r) => r.key === 'google_drive_refresh_token');
+        const accessRow = rows.find((r) => r.key === 'google_drive_access_token');
         const emailRow = rows.find((r) => r.key === 'google_drive_email');
+        const expiryRow = rows.find((r) => r.key === 'google_drive_token_expires_at');
+
         if (tokenRow?.value) refreshToken = tokenRow.value.trim();
+        if (accessRow?.value) accessToken = accessRow.value.trim();
         if (emailRow?.value) userEmail = emailRow.value.trim();
+        if (expiryRow?.value) tokenExpiresAt = new Date(expiryRow.value).getTime();
       }
     } catch {
       // Continue
     }
   }
 
-  // 2. Exchange refresh token for fresh access token
+  // 2. If access token is still valid, return it
+  if (accessToken && Date.now() < tokenExpiresAt - 60000) {
+    return { token: accessToken, email: userEmail };
+  }
+
+  // 3. Exchange refresh token for fresh access token
   if (clientId && clientSecret && refreshToken) {
     try {
       const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
@@ -47,7 +59,28 @@ async function getGoogleAccessToken(
 
       const tokenData: any = (await tokenRes.json()) as any;
       if (tokenData.access_token) {
-        return { token: tokenData.access_token, email: userEmail };
+        const freshToken = tokenData.access_token;
+        const expiresIn = Number(tokenData.expires_in || 3600);
+        const newExpiry = Date.now() + expiresIn * 1000;
+
+        // Persist fresh access token to app_config
+        if (supabaseUrl && supabaseServiceKey) {
+          fetch(`${supabaseUrl}/rest/v1/app_config?on_conflict=key`, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates',
+            },
+            body: JSON.stringify([
+              { key: 'google_drive_access_token', value: freshToken },
+              { key: 'google_drive_token_expires_at', value: new Date(newExpiry).toISOString() },
+            ]),
+          }).catch(() => {});
+        }
+
+        return { token: freshToken, email: userEmail };
       }
       return { token: null, error: tokenData.error_description || tokenData.error || 'Failed to exchange refresh token' };
     } catch (err: any) {

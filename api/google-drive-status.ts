@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 
 export default async function handler(req: IncomingMessage, res: ServerResponse) {
-  // Enable CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -17,6 +16,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     const clientId = (process.env.GOOGLE_CLIENT_ID || '').trim();
     const clientSecret = (process.env.GOOGLE_CLIENT_SECRET || '').trim();
     let refreshToken = (process.env.GOOGLE_REFRESH_TOKEN || '').trim();
+    let accessToken = '';
+    let tokenExpiresAt = 0;
 
     const supabaseUrl = (process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co').replace(/\/+$/, '');
     const supabaseServiceKey = (
@@ -26,7 +27,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       ''
     ).trim();
 
-    // 1. Read stored Google Drive tokens and email from database app_config
+    // 1. Read stored Google Drive tokens from PostgreSQL app_config table
     if (supabaseUrl && supabaseServiceKey) {
       try {
         const configRes = await fetch(`${supabaseUrl}/rest/v1/app_config?select=key,value`, {
@@ -38,16 +39,17 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         if (configRes.ok) {
           const configRows: Array<{ key: string; value: string }> = (await configRes.json().catch(() => [])) as any[];
           const tokenRow = configRows.find((r) => r.key === 'google_drive_refresh_token');
+          const accessRow = configRows.find((r) => r.key === 'google_drive_access_token');
           const emailRow = configRows.find((r) => r.key === 'google_drive_email');
-          if (tokenRow?.value) {
-            refreshToken = tokenRow.value.trim();
-          }
-          if (emailRow?.value) {
-            targetAccount = emailRow.value.trim();
-          }
+          const expiryRow = configRows.find((r) => r.key === 'google_drive_token_expires_at');
+
+          if (tokenRow?.value) refreshToken = tokenRow.value.trim();
+          if (accessRow?.value) accessToken = accessRow.value.trim();
+          if (emailRow?.value) targetAccount = emailRow.value.trim();
+          if (expiryRow?.value) tokenExpiresAt = new Date(expiryRow.value).getTime();
         }
       } catch (err: any) {
-        console.warn('Error reading app_config for Google Drive:', err.message);
+        console.warn('[GDRIVE-STATUS] Error reading app_config for Google Drive:', err.message);
       }
     }
 
@@ -55,8 +57,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
     let storageTotal = 15 * 1024 * 1024 * 1024; // 15 GB default Google Free Tier
     let isConnected = false;
 
-    // 2. Check Google Drive API Quota if tokens exist
-    if (clientId && clientSecret && refreshToken) {
+    // 2. Validate / Refresh Access Token
+    let activeToken = accessToken;
+
+    // If access token is missing or expired, and we have a refresh token:
+    if ((!activeToken || Date.now() >= tokenExpiresAt - 60000) && clientId && clientSecret && refreshToken) {
       try {
         const tokenRes = await fetch('https://oauth2.googleapis.com/token', {
           method: 'POST',
@@ -70,11 +75,42 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
         });
         const tokenData: any = (await tokenRes.json()) as any;
         if (tokenData.access_token) {
-          isConnected = true;
-          const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota,user', {
-            headers: { Authorization: `Bearer ${tokenData.access_token}` },
-          });
+          activeToken = tokenData.access_token;
+          const newExpiresIn = Number(tokenData.expires_in || 3600);
+          tokenExpiresAt = Date.now() + newExpiresIn * 1000;
+
+          // Update access token in app_config
+          if (supabaseUrl && supabaseServiceKey) {
+            await fetch(`${supabaseUrl}/rest/v1/app_config?on_conflict=key`, {
+              method: 'POST',
+              headers: {
+                apikey: supabaseServiceKey,
+                Authorization: `Bearer ${supabaseServiceKey}`,
+                'Content-Type': 'application/json',
+                Prefer: 'resolution=merge-duplicates',
+              },
+              body: JSON.stringify([
+                { key: 'google_drive_access_token', value: activeToken },
+                { key: 'google_drive_token_expires_at', value: new Date(tokenExpiresAt).toISOString() },
+              ]),
+            }).catch(() => {});
+          }
+        }
+      } catch (refreshErr: any) {
+        console.warn('[GDRIVE-STATUS] Refresh token exchange note:', refreshErr.message);
+      }
+    }
+
+    // 3. Test active token with Google Drive API /about
+    if (activeToken) {
+      try {
+        const aboutRes = await fetch('https://www.googleapis.com/drive/v3/about?fields=storageQuota,user', {
+          headers: { Authorization: `Bearer ${activeToken}` },
+        });
+
+        if (aboutRes.ok) {
           const aboutData: any = (await aboutRes.json()) as any;
+          isConnected = true;
           if (aboutData.user?.emailAddress) {
             targetAccount = aboutData.user.emailAddress;
           }
@@ -94,8 +130,8 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
       try {
         const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?select=id,brand_name,company_name,platform,status,notes,created_at,updated_at`, {
           headers: {
-            apikey: supabaseServiceKey.trim(),
-            Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
           },
         });
         records = (await recRes.json().catch(() => [])) as any[];
@@ -106,7 +142,7 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
 
     const whatsappCount = records.filter((r) => (r.platform || '').toLowerCase().includes('meta') || (r.platform || '').toLowerCase().includes('whatsapp')).length;
     const rcsCount = records.filter((r) => (r.platform || '').toLowerCase().includes('rcs')).length;
-    const totalFiles = records.length * 3; // Estimate
+    const totalFiles = records.length * 3;
 
     const usagePercent = Math.min(100, Math.round((storageUsed / (storageTotal || 1)) * 100));
 
@@ -132,13 +168,11 @@ export default async function handler(req: IncomingMessage, res: ServerResponse)
           rcsBackupFiles: rcsCount * 3,
           lastBackupAt: new Date().toISOString(),
         },
-        rootFolder: 'IMMENSE BACKUP',
-        rootUrl: 'https://drive.google.com/drive/u/0/folders/immense-backup-root',
       })
     );
   } catch (err: any) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ success: false, error: err.message || 'Error fetching Google Drive status.' }));
+    res.end(JSON.stringify({ success: false, error: err.message || 'Failed to retrieve Google Drive status.' }));
   }
 }
