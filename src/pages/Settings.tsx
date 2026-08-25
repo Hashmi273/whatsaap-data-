@@ -114,14 +114,21 @@ export function Settings() {
       const res = await fetch('/api/google-drive-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ companyName: 'All Companies Archive', platform: 'WhatsApp' }),
+        body: JSON.stringify({ recordId: 'all' }),
       });
-      const data = await res.json();
+      const data: any = (await res.json()) as any;
       if (res.ok && data.success) {
-        toast.success('Backup Sync Complete', `Saved to ${data.structure || 'IMMENSE Portal/'}`);
+        if (data.backedUpCount > 0) {
+          toast.success(
+            'Backup Verified & Complete',
+            `Successfully vaulted and verified ${data.backedUpCount} document(s) in My Drive under IMMENSE Portal/All Companies Archive/.`
+          );
+        } else {
+          toast.info('Hierarchy Verified', 'Google Drive folder structure verified in My Drive. No new unbacked documents found.');
+        }
         await fetchGdriveStatus();
       } else {
-        toast.error('Backup Error', data.error || 'Failed to complete secondary backup.');
+        toast.error('Backup Failed', data.error || 'Google Drive backup failed.');
       }
     } catch (err: any) {
       toast.error('Backup Error', err.message);
