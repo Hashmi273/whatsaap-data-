@@ -480,29 +480,38 @@ export function OnboardingDetail() {
   // Generate Temporary Signed URL for Preview
   const handlePreview = async (doc: OnboardingDocument) => {
     try {
-      if (doc.storage_path) {
-        const { data, error } = await supabase.storage
-          .from('onboarding-documents')
-          .createSignedUrl(doc.storage_path, 3600); // 1 hour token
-
-        if (!error && data?.signedUrl) {
-          setPreviewDoc(doc);
-          setPreviewSignedUrl(data.signedUrl);
-          return;
-        }
-      }
-
-      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string' && (doc as any).localPreviewUrl.startsWith('data:')) {
+      if ((doc as any).localPreviewUrl && typeof (doc as any).localPreviewUrl === 'string') {
         setPreviewDoc(doc);
         setPreviewSignedUrl((doc as any).localPreviewUrl);
         return;
       }
 
+      if (doc.storage_path) {
+        try {
+          const signEndpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&mode=url&disposition=inline`;
+          const res = await fetch(signEndpoint);
+          const data = await res.json().catch(() => ({}));
+
+          if (res.ok && data?.signedUrl) {
+            setPreviewDoc(doc);
+            setPreviewSignedUrl(data.signedUrl);
+            return;
+          }
+        } catch {
+          // Fallback
+        }
+
+        const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
+        setPreviewDoc(doc);
+        setPreviewSignedUrl(streamUrl);
+        return;
+      }
+
       setPreviewDoc(doc);
-      setPreviewSignedUrl('/logo.jpg');
+      setPreviewSignedUrl(null);
     } catch {
       setPreviewDoc(doc);
-      setPreviewSignedUrl('/logo.jpg');
+      setPreviewSignedUrl(null);
     }
   };
 

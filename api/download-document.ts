@@ -18,6 +18,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     let fileName = urlObj.searchParams.get('name') || '';
     let bucket = urlObj.searchParams.get('bucket') || 'onboarding-documents';
     let mode = urlObj.searchParams.get('mode') || 'stream'; // 'stream' or 'url'
+    let disposition = urlObj.searchParams.get('disposition') || 'attachment'; // 'attachment' or 'inline'
 
     if (req.method === 'POST') {
       let body: any = {};
@@ -37,6 +38,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       if (body.name) fileName = body.name;
       if (body.bucket) bucket = body.bucket;
       if (body.mode) mode = body.mode;
+      if (body.disposition) disposition = body.disposition;
     }
 
     if (!storagePath) {
@@ -48,15 +50,24 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
     // Clean filename
     const safeFileName = (fileName || storagePath.split('/').pop() || 'document').replace(/[^a-zA-Z0-9._-]/g, '_');
+    const ext = safeFileName.split('.').pop()?.toLowerCase() || '';
+
+    let defaultMime = 'application/octet-stream';
+    if (ext === 'pdf') defaultMime = 'application/pdf';
+    else if (['jpg', 'jpeg'].includes(ext)) defaultMime = 'image/jpeg';
+    else if (ext === 'png') defaultMime = 'image/png';
+    else if (ext === 'webp') defaultMime = 'image/webp';
+    else if (ext === 'docx') defaultMime = 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+    else if (ext === 'xlsx') defaultMime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
 
     const supabaseUrl = process.env.SUPABASE_URL || process.env.VITE_SUPABASE_URL || 'https://ztrskyefkugevypzfecl.supabase.co';
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
-    // 1. If service role key is configured, generate signed URL from Supabase Storage
+    // 1. If service role key is configured, generate signed URL or fetch from Supabase Storage
     if (supabaseUrl && supabaseServiceKey) {
       const cleanPath = storagePath.startsWith('/') ? storagePath.slice(1) : storagePath;
       
-      // Request signed URL from Supabase Storage API
+      // Request fresh signed URL (1 hour expiry)
       const signRes = await fetch(`${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`, {
         method: 'POST',
         headers: {
@@ -84,12 +95,12 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         // Stream the file directly
         const fileRes = await fetch(fullSignedUrl);
         if (fileRes.ok) {
-          const contentType = fileRes.headers.get('content-type') || 'application/octet-stream';
+          const contentType = fileRes.headers.get('content-type') || defaultMime;
           const buffer = Buffer.from(await fileRes.arrayBuffer());
 
           res.statusCode = 200;
           res.setHeader('Content-Type', contentType);
-          res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+          res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
           res.setHeader('Content-Length', buffer.length.toString());
           res.end(buffer);
           return;
@@ -105,47 +116,68 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       });
 
       if (directRes.ok) {
-        const contentType = directRes.headers.get('content-type') || 'application/octet-stream';
+        const contentType = directRes.headers.get('content-type') || defaultMime;
         const buffer = Buffer.from(await directRes.arrayBuffer());
 
         res.statusCode = 200;
         res.setHeader('Content-Type', contentType);
-        res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+        res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
         res.setHeader('Content-Length', buffer.length.toString());
         res.end(buffer);
         return;
       }
     }
 
-    // Fallback: Generate a sample document binary for previewed / seeded documents
-    const ext = safeFileName.split('.').pop()?.toLowerCase() || '';
-    let fallbackContent = '';
-    let fallbackType = 'application/octet-stream';
-
+    // 2. Fallback sample document binary generator for seeded demo records
     if (ext === 'pdf') {
-      fallbackType = 'application/pdf';
-      fallbackContent = `%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj\n4 0 obj<</Length 84>>stream\nBT /F1 18 Tf 50 720 Td (IMMENSE Secure Document: ${safeFileName}) Tj ET\nendstream\nendobj\n5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\nxref\n0 6\n0000000000 65535 f\n0000000010 00000 n\n0000000060 00000 n\n0000000117 00000 n\n0000000224 00000 n\n0000000358 00000 n\ntrailer<</Size 6/Root 1 0 R>>\nstartxref\n428\n%%EOF`;
+      const pdfString = `%PDF-1.4
+1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj
+2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj
+3 0 obj<</Type/Page/MediaBox[0 0 612 792]/Parent 2 0 R/Contents 4 0 R/Resources<</Font<</F1 5 0 R>>>>>>endobj
+4 0 obj<</Length 135>>stream
+BT /F1 18 Tf 50 720 Td (IMMENSE Enterprise Document: ${safeFileName}) Tj 0 -30 Td /F1 12 Tf (Confidential Document Vault Record) Tj ET
+endstream
+endobj
+5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj
+xref
+0 6
+0000000000 65535 f
+0000000010 00000 n
+0000000060 00000 n
+0000000117 00000 n
+0000000224 00000 n
+0000000409 00000 n
+trailer<</Size 6/Root 1 0 R>>
+startxref
+479
+%%EOF`;
+      const buffer = Buffer.from(pdfString);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
+      res.setHeader('Content-Length', buffer.length.toString());
+      res.end(buffer);
+      return;
     } else if (['jpg', 'jpeg', 'png', 'webp'].includes(ext)) {
-      fallbackType = ext === 'png' ? 'image/png' : 'image/jpeg';
-      // 1x1 transparent PNG / fallback binary
+      // 1x1 valid PNG binary
       const pngBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
       const buffer = Buffer.from(pngBase64, 'base64');
       res.statusCode = 200;
-      res.setHeader('Content-Type', fallbackType);
-      res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
+      res.setHeader('Content-Type', ext === 'png' ? 'image/png' : 'image/jpeg');
+      res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
       res.setHeader('Content-Length', buffer.length.toString());
       res.end(buffer);
       return;
     } else {
-      fallbackContent = `IMMENSE Document Vault\nDocument: ${safeFileName}\nTimestamp: ${new Date().toISOString()}`;
+      const content = `IMMENSE Document Vault\nDocument: ${safeFileName}\nTimestamp: ${new Date().toISOString()}`;
+      const buffer = Buffer.from(content);
+      res.statusCode = 200;
+      res.setHeader('Content-Type', defaultMime);
+      res.setHeader('Content-Disposition', `${disposition}; filename="${safeFileName}"`);
+      res.setHeader('Content-Length', buffer.length.toString());
+      res.end(buffer);
+      return;
     }
-
-    const buffer = Buffer.from(fallbackContent);
-    res.statusCode = 200;
-    res.setHeader('Content-Type', fallbackType);
-    res.setHeader('Content-Disposition', `attachment; filename="${safeFileName}"`);
-    res.setHeader('Content-Length', buffer.length.toString());
-    res.end(buffer);
   } catch (err: any) {
     res.statusCode = 500;
     res.setHeader('Content-Type', 'application/json');
