@@ -494,7 +494,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       }
 
       // Auto-ensure parent onboarding_records row exists before document insert
-      if (table === 'onboarding_documents' && dbAction === 'insert' && payload && payload.onboarding_id) {
+      if (table === 'onboarding_documents' && (dbAction === 'insert' || dbAction === 'upsert') && payload && payload.onboarding_id) {
         try {
           const recCheckRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?id=eq.${payload.onboarding_id}&select=id`, {
             headers: {
