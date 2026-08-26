@@ -211,7 +211,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     };
 
     // 5. Retrieve or issue authentic Supabase Auth session token
-    if (!authSession && supabaseUrl && supabaseServiceKey) {
+    if (supabaseUrl && supabaseServiceKey) {
       try {
         const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
           method: 'POST',
@@ -227,6 +227,37 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
         if (tokenRes.ok) {
           authSession = await tokenRes.json().catch(() => null);
+        } else {
+          const genRes = await fetch(`${supabaseUrl}/auth/v1/admin/generate_link`, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey.trim(),
+              Authorization: `Bearer ${supabaseServiceKey.trim()}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              type: 'magiclink',
+              email: cleanEmail,
+            }),
+          });
+          const genData: any = await genRes.json().catch(() => ({}));
+          if (genRes.ok && genData?.email_otp) {
+            const verifyRes = await fetch(`${supabaseUrl}/auth/v1/verify`, {
+              method: 'POST',
+              headers: {
+                apikey: supabaseServiceKey.trim(),
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({
+                type: 'magiclink',
+                email: cleanEmail,
+                token: genData.email_otp,
+              }),
+            });
+            if (verifyRes.ok) {
+              authSession = await verifyRes.json().catch(() => null);
+            }
+          }
         }
       } catch {
         // Ignore
