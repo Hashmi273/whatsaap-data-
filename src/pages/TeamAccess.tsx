@@ -26,6 +26,8 @@ import {
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { PageLayout } from '@/components/layout/PageLayout';
+import { downloadDocument } from '@/lib/download';
+import { saveDocumentMetadata } from '@/lib/storage';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { ROLE_OPTIONS, ROLE_COLORS, formatRoleLabel } from '@/types/database';
@@ -220,7 +222,7 @@ export function TeamAccess() {
       };
 
       try {
-        await supabase.from('profiles').insert(profilePayload as any);
+        await saveDocumentMetadata('profiles', profilePayload, 'insert');
       } catch (dbErr) {
         console.warn('Profile table insert note:', dbErr);
       }

@@ -31,6 +31,7 @@ import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { STATUS_OPTIONS } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile } from '@/types/database';
+import { saveDocumentMetadata } from '@/lib/storage';
 import { format } from 'date-fns';
 
 const INITIAL_DEMO_RCS_RECORDS: RcsOnboardingRecord[] = [
@@ -172,7 +173,7 @@ export function RcsList() {
   const deleteMutation = useMutation({
     mutationFn: async (record: RcsOnboardingRecord) => {
       try {
-        await supabase.from('onboarding_records').delete().eq('id', record.id);
+        await saveDocumentMetadata('onboarding_records', null, 'delete', { id: record.id });
       } catch {
         // Ignore
       }

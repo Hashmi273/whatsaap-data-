@@ -9,6 +9,7 @@ import type { User, Session } from '@supabase/supabase-js';
 import { supabase } from './supabase';
 import { ALLOWED_EMAIL_DOMAIN } from './constants';
 import { logAudit } from './audit';
+import { saveDocumentMetadata } from './storage';
 import type { Profile, UserRole } from '@/types/database';
 
 interface AuthContextType {
@@ -513,14 +514,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     try {
       if (profile.id && !profile.id.startsWith('immense-') && !profile.id.startsWith('demo-')) {
-        await supabase
-          .from('profiles')
-          .update({
-            full_name: updatedProfile.full_name,
-            department: updatedProfile.department,
-            updated_at: updatedProfile.updated_at,
-          })
-          .eq('id', profile.id);
+        await saveDocumentMetadata('profiles', {
+          full_name: updatedProfile.full_name,
+          department: updatedProfile.department,
+          updated_at: updatedProfile.updated_at,
+        }, 'update', { id: profile.id });
       }
     } catch (err: any) {
       console.warn('DB profile update note:', err);

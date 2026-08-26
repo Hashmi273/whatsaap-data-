@@ -246,7 +246,7 @@ export function OnboardingForm() {
         }
 
         try {
-          await supabase.from('onboarding_records').update(updatePayload).eq('id', id);
+          await saveDocumentMetadata('onboarding_records', updatePayload, 'update', { id });
         } catch (dbErr) {
           console.warn('DB update note:', dbErr);
         }

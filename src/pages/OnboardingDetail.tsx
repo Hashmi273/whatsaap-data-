@@ -258,12 +258,8 @@ export function OnboardingDetail() {
   const statusMutation = useMutation({
     mutationFn: async (newStatus: OnboardingStatus) => {
       if (!id) return;
-      const { error } = await supabase
-        .from('onboarding_records')
-        .update({ status: newStatus, updated_at: new Date().toISOString() })
-        .eq('id', id);
-
-      if (error) throw error;
+      const res = await saveDocumentMetadata('onboarding_records', { status: newStatus, updated_at: new Date().toISOString() }, 'update', { id });
+      if (!res.success) throw new Error(res.error || 'Failed to update record status.');
 
       await logAudit('record_edited', 'onboarding', id, {
         previous_status: record?.status,
@@ -285,12 +281,8 @@ export function OnboardingDetail() {
   const reassignMutation = useMutation({
     mutationFn: async (newAssigneeId: string) => {
       if (!id) return;
-      const { error } = await supabase
-        .from('onboarding_records')
-        .update({ assigned_to: newAssigneeId || null, updated_at: new Date().toISOString() })
-        .eq('id', id);
-
-      if (error) throw error;
+      const res = await saveDocumentMetadata('onboarding_records', { assigned_to: newAssigneeId || null, updated_at: new Date().toISOString() }, 'update', { id });
+      if (!res.success) throw new Error(res.error || 'Failed to reassign record.');
 
       await logAudit('assignment_changed', 'onboarding', id, {
         previous_assigned: record?.assigned_to,

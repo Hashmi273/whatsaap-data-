@@ -119,6 +119,43 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
+    // Auto-ensure parent onboarding_records row exists before document insert to avoid FK/permission errors
+    if (table === 'onboarding_documents' && action === 'insert' && payload && payload.onboarding_id) {
+      try {
+        const recCheckRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?id=eq.${payload.onboarding_id}&select=id`, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+        const recCheckData = await recCheckRes.json().catch(() => []);
+        if (!Array.isArray(recCheckData) || recCheckData.length === 0) {
+          const parentPayload = {
+            id: payload.onboarding_id,
+            brand_name: payload.brand_name || 'Immense Client',
+            company_name: payload.company_name || 'Immense Client',
+            whatsapp_number: payload.whatsapp_number || '+91 99999 99999',
+            platform: 'WhatsApp Onboarding',
+            status: 'submitted',
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          };
+          await fetch(`${supabaseUrl}/rest/v1/onboarding_records?on_conflict=id`, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'resolution=merge-duplicates',
+            },
+            body: JSON.stringify(parentPayload),
+          }).catch(() => {});
+        }
+      } catch (parentErr) {
+        console.warn('[SAVE-METADATA] Parent record check warning:', parentErr);
+      }
+    }
+
     let targetUrl = `${supabaseUrl}/rest/v1/${table}`;
     let method = 'POST';
     const headers: Record<string, string> = {
