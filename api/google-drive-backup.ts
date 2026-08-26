@@ -466,6 +466,7 @@ failureReason=${diagnostics.failureReason}`);
     // Stage 2: Fetch Records from Supabase
     let recordsToProcess: any[] = [];
     try {
+      let recRaw: any;
       if (recordId && recordId !== 'all') {
         const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?id=eq.${recordId}&select=id,brand_name,company_name,platform`, {
           headers: {
@@ -473,7 +474,14 @@ failureReason=${diagnostics.failureReason}`);
             Authorization: `Bearer ${supabaseServiceKey}`,
           },
         });
-        recordsToProcess = (await recRes.json().catch(() => [])) as any[];
+        recRaw = await recRes.json().catch(() => []);
+        if (!recRes.ok) {
+          const sbErr = typeof recRaw === 'object' && !Array.isArray(recRaw) ? (recRaw?.message || recRaw?.error || JSON.stringify(recRaw)) : recRes.statusText;
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: `Supabase records query failed (HTTP ${recRes.status}): ${sbErr}`, code: 'DOCUMENT_QUERY_FAILED' }));
+          return;
+        }
       } else {
         const recRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?select=id,brand_name,company_name,platform`, {
           headers: {
@@ -481,8 +489,27 @@ failureReason=${diagnostics.failureReason}`);
             Authorization: `Bearer ${supabaseServiceKey}`,
           },
         });
-        recordsToProcess = (await recRes.json().catch(() => [])) as any[];
+        recRaw = await recRes.json().catch(() => []);
+        if (!recRes.ok) {
+          const sbErr = typeof recRaw === 'object' && !Array.isArray(recRaw) ? (recRaw?.message || recRaw?.error || JSON.stringify(recRaw)) : recRes.statusText;
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: `Supabase records query failed (HTTP ${recRes.status}): ${sbErr}`, code: 'DOCUMENT_QUERY_FAILED' }));
+          return;
+        }
       }
+
+      // CRITICAL GUARD: Supabase returns an error object (not array) on auth/permission failures
+      if (!Array.isArray(recRaw)) {
+        const sbErr = typeof recRaw === 'object' ? (recRaw?.message || recRaw?.error || JSON.stringify(recRaw)) : String(recRaw);
+        console.error('[GDRIVE-BACKUP] recordsToProcess is not an array. Actual value type:', typeof recRaw, 'value:', JSON.stringify(recRaw)?.slice(0, 200));
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: `Supabase records response is not an array. Likely auth/RLS issue: ${sbErr}`, code: 'RECORDS_NOT_ARRAY', actualType: typeof recRaw }));
+        return;
+      }
+
+      recordsToProcess = recRaw;
     } catch (recErr: any) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');

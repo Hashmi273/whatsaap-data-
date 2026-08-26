@@ -79,6 +79,11 @@ export function Settings() {
     if (gdriveParam === 'connected') {
       toast.success('Google Drive Connected', `Successfully authenticated with ${emailParam || 'Google Drive'}.`);
       setSearchParams({});
+      // The callback just wrote tokens to DB — re-fetch status after a brief
+      // delay to let the DB write propagate and update the badge automatically.
+      setTimeout(() => {
+        fetchGdriveStatus();
+      }, 1500);
     } else if (gdriveError) {
       toast.error('Google Drive Connection Failed', decodeURIComponent(gdriveError));
       setSearchParams({});
