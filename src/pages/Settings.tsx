@@ -60,6 +60,10 @@ export function Settings() {
       if (res.ok) {
         const data = await res.json();
         setGdriveStatus(data);
+        // Surface exact diagnosis in console when badge shows not-connected despite successful call
+        if (!data.isConnected && data.connectionDetermination) {
+          console.warn('[GDRIVE-STATUS] Not connected. Determination:', data.connectionDetermination, '| Diagnostics:', data.diagnostics);
+        }
       }
     } catch {
       // Ignore
