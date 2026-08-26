@@ -28,7 +28,7 @@ import { useToast } from '@/lib/toast';
 import { formatCategoryLabel, CATEGORY_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { OnboardingDocument, OnboardingRecord, DocumentCategory } from '@/types/database';
 import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData';
-import { isValidUuid } from '@/lib/constants';
+import { isValidUuid, generateUuid } from '@/lib/constants';
 import { format } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
 import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
@@ -239,7 +239,7 @@ export function DocumentVault() {
       }
 
       const newDocItem: any = {
-        id: `doc-${Date.now()}`,
+        id: generateUuid(),
         ...docPayload,
         created_at: new Date().toISOString(),
         localPreviewUrl: blobUrl,

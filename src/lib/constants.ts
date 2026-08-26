@@ -13,11 +13,22 @@ export const ALLOWED_EMAIL_DOMAIN = import.meta.env.VITE_ALLOWED_EMAIL_DOMAIN ||
 export const ADMIN_SECURITY_EMAIL = 'hashmimdparvej78654@gmail.com';
 export const ADMIN_SECURITY_PHONE = '8858674641';
 
-// UUID validation helper
+// UUID validation and generation helpers
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 export function isValidUuid(str?: string | null): boolean {
   if (!str) return false;
   return UUID_REGEX.test(str);
+}
+
+export function generateUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
 }
 
 // Pagination

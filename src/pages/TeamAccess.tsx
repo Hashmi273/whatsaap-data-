@@ -32,7 +32,7 @@ import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { ROLE_OPTIONS, ROLE_COLORS, formatRoleLabel } from '@/types/database';
 import type { Profile, UserRole, OnboardingRecord } from '@/types/database';
-import { ALLOWED_EMAIL_DOMAIN, ADMIN_SECURITY_EMAIL, ADMIN_SECURITY_PHONE, isValidUuid } from '@/lib/constants';
+import { ALLOWED_EMAIL_DOMAIN, ADMIN_SECURITY_EMAIL, ADMIN_SECURITY_PHONE, isValidUuid, generateUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 
 export function TeamAccess() {
@@ -208,7 +208,7 @@ export function TeamAccess() {
       }
 
       // 2. Insert into profiles table
-      const newUserId = `usr-${Date.now()}`;
+      const newUserId = generateUuid();
       const profilePayload: Partial<Profile> = {
         id: newUserId,
         full_name: fullNameTrimmed,

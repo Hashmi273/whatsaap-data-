@@ -30,7 +30,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { SubmissionSuccessModal } from '@/components/shared/SubmissionSuccessModal';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
-import { isValidUuid } from '@/lib/constants';
+import { isValidUuid, generateUuid } from '@/lib/constants';
 import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { OnboardingRecord, Profile, DocumentCategory } from '@/types/database';
 import { format } from 'date-fns';
@@ -309,7 +309,7 @@ export function OnboardingForm() {
         }
 
         if (!newRecordId) {
-          newRecordId = `rec-${Date.now()}`;
+          newRecordId = generateUuid();
         }
 
         const localRecord = {

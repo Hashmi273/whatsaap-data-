@@ -26,7 +26,7 @@ import { SubmissionSuccessModal } from '@/components/shared/SubmissionSuccessMod
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
-import { isValidUuid } from '@/lib/constants';
+import { isValidUuid, generateUuid } from '@/lib/constants';
 import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile, DocumentCategory } from '@/types/database';
 import { format } from 'date-fns';
@@ -178,7 +178,7 @@ export function RcsForm() {
     }
 
     setIsSubmitting(true);
-    const newRecordId = isEditing ? id! : `rcs-${Date.now()}`;
+    const newRecordId = isEditing && isValidUuid(id) ? id! : generateUuid();
     const submissionStatus: OnboardingStatus = isEditing ? status : 'submitted';
 
     const rcsPayload: RcsOnboardingRecord = {

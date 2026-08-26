@@ -8,6 +8,23 @@ export const config = {
   },
 };
 
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function isValidUuid(str?: string | null): boolean {
+  if (!str || typeof str !== 'string') return false;
+  return UUID_REGEX.test(str.trim());
+}
+
+function generateUuid(): string {
+  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+    return crypto.randomUUID();
+  }
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === 'x' ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 function getSupabaseCredentials() {
   const supabaseUrl = (
     process.env.SUPABASE_URL ||
@@ -230,7 +247,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         try { body = JSON.parse(rawBody || '{}'); } catch { body = {}; }
       }
 
-      const { table = 'onboarding_documents', payload, action: dbAction = 'insert', match } = body;
+      let { table = 'onboarding_documents', payload, action: dbAction = 'insert', match } = body;
 
       if (!ALLOWED_TABLES.has(table)) {
         res.statusCode = 400;
@@ -244,6 +261,42 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ success: false, error: 'SUPABASE_SERVICE_ROLE_KEY missing.' }));
         return;
+      }
+
+      // --- Strict UUID Sanitization for Postgres Compliance ---
+      if (payload && typeof payload === 'object') {
+        payload = { ...payload };
+
+        if (payload.id && !isValidUuid(payload.id)) {
+          payload.id = generateUuid();
+        }
+
+        if (payload.onboarding_id && !isValidUuid(payload.onboarding_id)) {
+          payload.onboarding_id = generateUuid();
+        }
+
+        if (payload.uploaded_by && !isValidUuid(payload.uploaded_by)) {
+          delete payload.uploaded_by;
+        }
+
+        if (payload.assigned_to && !isValidUuid(payload.assigned_to)) {
+          delete payload.assigned_to;
+        }
+
+        if (payload.created_by && !isValidUuid(payload.created_by)) {
+          delete payload.created_by;
+        }
+      }
+
+      if (match && typeof match === 'object') {
+        match = { ...match };
+        if (match.id && !isValidUuid(match.id)) {
+          // If trying to match non-UUID ID that never existed in DB, respond success gracefully
+          res.statusCode = 200;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: true, data: [] }));
+          return;
+        }
       }
 
       // Auto-ensure parent onboarding_records row exists before document insert
