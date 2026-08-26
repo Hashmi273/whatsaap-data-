@@ -124,23 +124,33 @@ export function DocumentVault() {
         return;
       }
 
-      // 2. Direct binary download via client session
-      const { data: blobData, error: downloadErr } = await supabase.storage
-        .from('onboarding-documents')
-        .download(doc.storage_path);
-
-      if (!downloadErr && blobData && blobData.size > 0) {
-        const blobUrl = URL.createObjectURL(blobData);
-        setPreviewSignedUrl(blobUrl);
-        return;
+      // 2. Fetch via authenticated serverless endpoint and convert to Blob Object URL
+      const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      let token = sessionData?.session?.access_token || '';
+      if (!token) {
+        try {
+          const saved = localStorage.getItem('immense_auth_session');
+          if (saved) token = JSON.parse(saved)?.access_token || '';
+        } catch {
+          // Ignore
+        }
       }
 
-      // 3. Fallback to serverless stream
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
+      const headers: Record<string, string> = {};
+      if (token) headers['Authorization'] = `Bearer ${token}`;
+
+      const res = await fetch(`/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}`, { headers });
+      if (res.ok) {
+        const blob = await res.blob();
+        if (blob && blob.size > 0) {
+          const blobUrl = URL.createObjectURL(blob);
+          setPreviewSignedUrl(blobUrl);
+          return;
+        }
+      }
+      setPreviewSignedUrl(null);
     } catch {
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
+      setPreviewSignedUrl(null);
     }
   };
 

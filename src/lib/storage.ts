@@ -39,8 +39,7 @@ export async function uploadDocumentToStorage(
     reader.readAsDataURL(file);
     const fileBase64 = await base64Promise;
 
-    const { data: sessionData } = await supabase.auth.getSession();
-    const token = sessionData?.session?.access_token;
+    const token = await getAuthBearerToken();
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -71,6 +70,29 @@ export async function uploadDocumentToStorage(
   }
 }
 
+async function getAuthBearerToken(): Promise<string> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+    if (sessionData?.session?.access_token) {
+      return sessionData.session.access_token;
+    }
+  } catch {
+    // Ignore
+  }
+
+  try {
+    const saved = localStorage.getItem('immense_auth_session');
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (parsed?.access_token) return parsed.access_token;
+    }
+  } catch {
+    // Ignore
+  }
+
+  return '';
+}
+
 /**
  * Saves metadata to PostgreSQL tables (onboarding_documents, onboarding_records, etc.)
  * using serverless API route /api/save-document-metadata backed by Service Role key.
@@ -82,8 +104,7 @@ export async function saveDocumentMetadata(
   match?: Record<string, any>
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
-    const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-    const token = sessionData?.session?.access_token || '';
+    const token = await getAuthBearerToken();
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {
@@ -122,8 +143,7 @@ export async function fetchDocumentMetadata(
   options?: { match?: Record<string, any>; order?: { column: string; ascending?: boolean }; limit?: number }
 ): Promise<{ success: boolean; data?: any[]; error?: string }> {
   try {
-    const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-    const token = sessionData?.session?.access_token || '';
+    const token = await getAuthBearerToken();
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {

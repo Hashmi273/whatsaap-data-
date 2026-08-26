@@ -54,8 +54,16 @@ export async function downloadDocument(
 
     // 2. Fallback to serverless endpoint
     if (!blob) {
-      const { data: sessionData } = await supabase.auth.getSession();
-      const token = sessionData?.session?.access_token;
+      const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+      let token = sessionData?.session?.access_token || '';
+      if (!token) {
+        try {
+          const saved = localStorage.getItem('immense_auth_session');
+          if (saved) token = JSON.parse(saved)?.access_token || '';
+        } catch {
+          // Ignore
+        }
+      }
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
 

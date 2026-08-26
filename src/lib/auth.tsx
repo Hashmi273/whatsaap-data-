@@ -272,7 +272,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     };
   }, [fetchProfile]);
 
-  const loginAsDemo = useCallback((role: UserRole) => {
+  const loginAsDemo = useCallback(async (role: UserRole) => {
     const demoInfo = DEMO_USERS[role] || DEMO_USERS.super_admin;
     const mockUser: any = {
       id: demoInfo.profile.id,
@@ -292,6 +292,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setUser(mockUser);
     setProfile(demoInfo.profile);
     setLoading(false);
+
+    // Obtain real Supabase Auth token session via serverless auth
+    try {
+      const serverRes = await fetch('/api/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: demoInfo.email, password: 'DemoAdmin123!' }),
+      });
+      const resData = await serverRes.json().catch(() => ({}));
+      if (resData?.session?.access_token) {
+        await supabase.auth.setSession(resData.session).catch(() => {});
+        localStorage.setItem('immense_auth_session', JSON.stringify(resData.session));
+        setSession(resData.session);
+      }
+    } catch {
+      // Ignore
+    }
   }, []);
 
   const signIn = useCallback(async (email: string, password: string) => {
@@ -311,6 +328,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       if (!authErr && authData?.session) {
         setSession(authData.session);
         setUser(authData.user);
+        localStorage.setItem('immense_auth_session', JSON.stringify(authData.session));
         const p = await fetchProfile(authData.user.id);
         if (p) {
           setProfile(p);
@@ -330,44 +348,27 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         body: JSON.stringify({ email: cleanEmail, password }),
       });
 
-      const serverData = await serverRes.json().catch(() => ({}));
-
-      if (serverRes.ok && serverData.success && serverData.profile) {
-        if (serverData.session?.access_token && serverData.session?.refresh_token) {
-          try {
-            const { data: setSessData } = await supabase.auth.setSession({
-              access_token: serverData.session.access_token,
-              refresh_token: serverData.session.refresh_token,
-            });
-            if (setSessData?.session) {
-              setSession(setSessData.session);
-            }
-          } catch {
-            // Ignore
-          }
+      const resData = await serverRes.json().catch(() => ({}));
+      if (serverRes.ok && resData.success) {
+        if (resData.session?.access_token) {
+          await supabase.auth.setSession(resData.session).catch(() => {});
+          localStorage.setItem('immense_auth_session', JSON.stringify(resData.session));
+          setSession(resData.session);
         }
-
-        setUser(serverData.user);
-        setProfile(serverData.profile);
-        setLoading(false);
-
+        setUser(resData.user);
+        setProfile(resData.profile);
         try {
-          localStorage.setItem('immense_demo_user', JSON.stringify(serverData.user));
-          localStorage.setItem('immense_demo_profile', JSON.stringify(serverData.profile));
-          // Store password locally for seamless offline/fast retrieval
-          const userPasswords = JSON.parse(localStorage.getItem('immense_user_passwords') || '{}');
-          userPasswords[cleanEmail] = password;
-          localStorage.setItem('immense_user_passwords', JSON.stringify(userPasswords));
+          localStorage.setItem('immense_demo_user', JSON.stringify(resData.user));
+          localStorage.setItem('immense_demo_profile', JSON.stringify(resData.profile));
         } catch {
           // Ignore
         }
-
+        setLoading(false);
         return { error: null };
-      } else if (serverData.error) {
-        return { error: serverData.error };
       }
-    } catch {
-      // Fallback for offline dev
+      return { error: resData.error || 'Authentication failed' };
+    } catch (err: any) {
+      return { error: err.message || 'Network error during authentication' };
     }
 
     // 2. Fallback to custom updated user passwords store
@@ -415,7 +416,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       demoKey &&
       (password === 'Admin@Immense2026!' || password === 'password123' || password === 'immense123')
     ) {
-      loginAsDemo(demoKey);
+      await loginAsDemo(demoKey as UserRole);
       return { error: null };
     }
 

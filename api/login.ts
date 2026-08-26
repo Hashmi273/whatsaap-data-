@@ -210,8 +210,29 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       updated_at: new Date().toISOString(),
     };
 
-    // 5. Record login audit record
-    if (supabaseUrl && supabaseServiceKey) {
+    // 5. Retrieve or issue authentic Supabase Auth session token
+    if (!authSession && supabaseUrl && supabaseServiceKey) {
+      try {
+        const tokenRes = await fetch(`${supabaseUrl}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey.trim(),
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            email: cleanEmail,
+            password: password || 'DemoAdmin123!',
+          }),
+        });
+
+        if (tokenRes.ok) {
+          authSession = await tokenRes.json().catch(() => null);
+        }
+      } catch {
+        // Ignore
+      }
+
+      // Record login audit record
       try {
         await fetch(`${supabaseUrl}/rest/v1/audit_logs`, {
           method: 'POST',
