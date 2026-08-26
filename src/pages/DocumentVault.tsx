@@ -31,7 +31,7 @@ import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData
 import { isValidUuid, generateUuid } from '@/lib/constants';
 import { format } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
-import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
 
 export function DocumentVault() {
   const navigate = useNavigate();
@@ -66,13 +66,9 @@ export function DocumentVault() {
       let allRecords: any[] = [...localRecords];
 
       try {
-        const { data: dbRecords, error } = await supabase
-          .from('onboarding_records')
-          .select('*')
-          .order('brand_name');
-
-        if (!error && dbRecords && dbRecords.length > 0) {
-          dbRecords.forEach((d) => {
+        const res = await fetchDocumentMetadata('onboarding_records', '*', { order: { column: 'brand_name', ascending: true } });
+        if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+          res.data.forEach((d) => {
             if (!allRecords.some((r) => r.id === d.id)) {
               allRecords.push(d);
             }
@@ -89,11 +85,10 @@ export function DocumentVault() {
       // 2. Gather all database documents
       let dbDocs: any[] = [];
       try {
-        const { data: dData } = await supabase
-          .from('onboarding_documents')
-          .select('*')
-          .order('created_at', { ascending: false });
-        if (dData) dbDocs = dData;
+        const dRes = await fetchDocumentMetadata('onboarding_documents', '*', { order: { column: 'created_at', ascending: false } });
+        if (dRes.success && Array.isArray(dRes.data)) {
+          dbDocs = dRes.data;
+        }
       } catch {
         // Ignore
       }

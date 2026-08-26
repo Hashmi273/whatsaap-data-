@@ -112,3 +112,43 @@ export async function saveDocumentMetadata(
     return { success: false, error: err.message || 'Network error saving metadata.' };
   }
 }
+
+/**
+ * Safely fetches metadata from PostgreSQL tables via authenticated serverless endpoint.
+ */
+export async function fetchDocumentMetadata(
+  table: string,
+  select: string = '*',
+  options?: { match?: Record<string, any>; order?: { column: string; ascending?: boolean }; limit?: number }
+): Promise<{ success: boolean; data?: any[]; error?: string }> {
+  try {
+    const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
+    const token = sessionData?.session?.access_token || '';
+
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const res = await fetch('/api/save-document-metadata', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        table,
+        action: 'query',
+        select,
+        match: options?.match,
+        order: options?.order,
+        limit: options?.limit,
+      }),
+    });
+
+    const resData = await res.json().catch(() => ({}));
+    if (res.ok && resData.success && Array.isArray(resData.data)) {
+      return { success: true, data: resData.data };
+    }
+    return { success: false, error: resData.error || 'Failed to fetch data' };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}

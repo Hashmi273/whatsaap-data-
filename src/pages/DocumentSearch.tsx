@@ -33,6 +33,7 @@ import type {
 } from '@/types/database';
 import { format } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
+import { fetchDocumentMetadata } from '@/lib/storage';
 
 type DocumentWithRelations = OnboardingDocument & {
   onboarding: OnboardingRecord | null;
@@ -57,17 +58,9 @@ export function DocumentSearch() {
     queryKey: ['global-documents-search'],
     queryFn: async () => {
       try {
-        const { data, error } = await supabase
-          .from('onboarding_documents')
-          .select(`
-            *,
-            onboarding:onboarding_records(id, brand_name, company_name, whatsapp_number, status),
-            uploader_profile:profiles!onboarding_documents_uploaded_by_fkey(id, full_name, corporate_email)
-          `)
-          .order('created_at', { ascending: false });
-
-        if (!error && data) {
-          return data as DocumentWithRelations[];
+        const res = await fetchDocumentMetadata('onboarding_documents', '*', { order: { column: 'created_at', ascending: false } });
+        if (res.success && Array.isArray(res.data)) {
+          return res.data as DocumentWithRelations[];
         }
       } catch (err) {
         console.warn('Doc search fetch error:', err);

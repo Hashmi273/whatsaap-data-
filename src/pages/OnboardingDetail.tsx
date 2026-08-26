@@ -46,7 +46,7 @@ import { hasPermission } from '@/lib/permissions';
 import { isValidUuid } from '@/lib/constants';
 import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
-import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
 import {
   CATEGORY_OPTIONS,
   STATUS_OPTIONS,
@@ -201,17 +201,9 @@ export function OnboardingDetail() {
     queryFn: async () => {
       if (!id) return [];
       try {
-        const { data, error } = await supabase
-          .from('onboarding_documents')
-          .select(`
-            *,
-            uploader_profile:profiles!onboarding_documents_uploaded_by_fkey(full_name, corporate_email)
-          `)
-          .eq('onboarding_id', id)
-          .order('created_at', { ascending: false });
-
-        if (!error && data) {
-          return data as (OnboardingDocument & { uploader_profile: Profile | null })[];
+        const res = await fetchDocumentMetadata('onboarding_documents', '*', { match: { onboarding_id: id }, order: { column: 'created_at', ascending: false } });
+        if (res.success && Array.isArray(res.data)) {
+          return res.data as (OnboardingDocument & { uploader_profile: Profile | null })[];
         }
       } catch (err) {
         console.warn('Document fetch error:', err);

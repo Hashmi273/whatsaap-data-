@@ -52,7 +52,7 @@ import { isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
-import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
 
 export function RcsDetail() {
   const { id } = useParams<{ id: string }>();
@@ -147,16 +147,8 @@ export function RcsDetail() {
     queryFn: async () => {
       if (!id) return [];
       try {
-        const { data, error } = await supabase
-          .from('onboarding_documents')
-          .select(`
-            *,
-            uploader_profile:profiles!onboarding_documents_uploaded_by_fkey(id, full_name, corporate_email)
-          `)
-          .eq('onboarding_id', id)
-          .order('created_at', { ascending: false });
-
-        if (!error && data) return data as OnboardingDocument[];
+        const res = await fetchDocumentMetadata('onboarding_documents', '*', { match: { onboarding_id: id }, order: { column: 'created_at', ascending: false } });
+        if (res.success && Array.isArray(res.data)) return res.data as OnboardingDocument[];
       } catch (err) {
         console.warn('Doc fetch error:', err);
       }
@@ -370,7 +362,7 @@ export function RcsDetail() {
       }
 
       try {
-        await supabase.from('onboarding_documents').delete().eq('id', doc.id);
+        await saveDocumentMetadata('onboarding_documents', null, 'delete', { id: doc.id });
       } catch {
         // Ignore
       }

@@ -348,6 +348,52 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
+      if (!supabaseServiceKey) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: 'SUPABASE_SERVICE_ROLE_KEY missing.' }));
+        return;
+      }
+
+      // --- Query / Select Action Handling ---
+      if (dbAction === 'query' || dbAction === 'select') {
+        let queryUrl = `${supabaseUrl}/rest/v1/${table}?select=${encodeURIComponent(body.select || '*')}`;
+        if (match && typeof match === 'object') {
+          for (const [k, v] of Object.entries(match)) {
+            if (v !== undefined && v !== null) {
+              queryUrl += `&${encodeURIComponent(k)}=eq.${encodeURIComponent(String(v))}`;
+            }
+          }
+        }
+        if (body.order && typeof body.order === 'object' && body.order.column) {
+          const dir = body.order.ascending === false ? 'desc' : 'asc';
+          queryUrl += `&order=${encodeURIComponent(body.order.column)}.${dir}`;
+        }
+        if (body.limit && typeof body.limit === 'number') {
+          queryUrl += `&limit=${body.limit}`;
+        }
+
+        const queryRes = await fetch(queryUrl, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+
+        const queryData: any = (await queryRes.json().catch(() => [])) as any[];
+        if (!queryRes.ok) {
+          res.statusCode = queryRes.status || 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: `Database query error (${queryRes.status}): ${JSON.stringify(queryData)}` }));
+          return;
+        }
+
+        res.statusCode = 200;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: true, data: queryData }));
+        return;
+      }
+
       // 2. SERVER-SIDE ROLE-BASED AUTHORIZATION ENGINE
       if (userRole === 'viewer' && dbAction !== 'delete') {
         res.statusCode = 403;
