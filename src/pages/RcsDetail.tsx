@@ -196,6 +196,7 @@ export function RcsDetail() {
 
       // 2. Metadata Insert / Replace ONLY after storage succeeds
       const docPayload: any = {
+        id: crypto.randomUUID(),
         onboarding_id: id,
         file_name: file.name,
         original_name: file.name,
@@ -209,7 +210,7 @@ export function RcsDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
+      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
       if (!saveRes.success) {
         throw new Error(`Database record failed: ${saveRes.error}`);
       }

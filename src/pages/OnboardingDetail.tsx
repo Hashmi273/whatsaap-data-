@@ -379,6 +379,7 @@ export function OnboardingDetail() {
 
       // 2. Insert metadata record in onboarding_documents ONLY after storage succeeded
       const docPayload: any = {
+        id: crypto.randomUUID(),
         onboarding_id: id,
         file_name: selectedFile.name,
         original_name: selectedFile.name,
@@ -392,7 +393,7 @@ export function OnboardingDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
+      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
       if (!saveRes.success) {
         throw new Error(`Database record failed: ${saveRes.error}`);
       }

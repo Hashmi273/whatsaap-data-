@@ -149,6 +149,7 @@ export function RcsForm() {
       }
 
       const docPayload: any = {
+        id: crypto.randomUUID(),
         onboarding_id: recordId,
         file_name: file.name,
         original_name: file.name,
@@ -162,7 +163,7 @@ export function RcsForm() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
+      await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
     } catch (err) {
       console.warn('Doc upload helper error:', err);
     }

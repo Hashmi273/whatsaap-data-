@@ -544,6 +544,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         method = 'POST';
       } else if (dbAction === 'upsert') {
         method = 'POST';
+        targetUrl += '?on_conflict=id';
         headers['Prefer'] = 'resolution=merge-duplicates,return=representation';
       } else if (dbAction === 'update') {
         method = 'PATCH';

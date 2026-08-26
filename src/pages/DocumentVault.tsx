@@ -202,20 +202,18 @@ export function DocumentVault() {
       const storagePath = `${recordId}/${uploadCategory}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      // 1. Storage Upload
-      try {
-        await supabase.storage
-          .from('onboarding-documents')
-          .upload(storagePath, uploadFile, {
-            cacheControl: '3600',
-            upsert: false,
-          });
-      } catch (storageErr) {
-        console.warn('Storage upload note:', storageErr);
+      // 1. Storage Upload (Client + Serverless fallback)
+      const uploadRes = await uploadDocumentToStorage(storagePath, uploadFile, 'onboarding-documents');
+      if (!uploadRes.success) {
+        setUploadError(uploadRes.error || 'Physical document could not be uploaded to private storage.');
+        setIsUploading(false);
+        return;
       }
 
-      // 2. Metadata Insert
+      // 2. Metadata Insert ONLY after storage upload succeeds
+      const docId = crypto.randomUUID();
       const docPayload: any = {
+        id: docId,
         onboarding_id: recordId,
         file_name: uploadFile.name,
         original_name: uploadFile.name,
@@ -229,10 +227,11 @@ export function DocumentVault() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      try {
-        await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
-      } catch (metaErr) {
-        console.warn('Metadata insert note:', metaErr);
+      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
+      if (!saveRes.success) {
+        setUploadError(saveRes.error || 'Failed to save document metadata.');
+        setIsUploading(false);
+        return;
       }
 
       // 3. Persist into local vault caches
