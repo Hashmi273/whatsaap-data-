@@ -1,6 +1,6 @@
 // ============================================================
 // Supabase Client Configuration & Dynamic Connection Manager
-// SECURITY: Only uses the public anon key — never the service-role key.
+// SECURITY: Uses the public anon key — never the service-role key.
 // The anon key is safe for frontend because RLS policies protect all data.
 // ============================================================
 
@@ -8,7 +8,6 @@ import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 // Official Project Supabase Endpoint
 export const PROJECT_SUPABASE_URL = 'https://ztrskyefkugevypzfecl.supabase.co';
-export const FALLBACK_ANON_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.dummy_anon_fallback';
 
 export function getActiveSupabaseUrl(): string {
   try {
@@ -23,18 +22,31 @@ export function getActiveSupabaseUrl(): string {
 export function getActiveSupabaseAnonKey(): string {
   try {
     const saved = localStorage.getItem('immense_supabase_anon_key');
-    if (saved && saved.trim()) return saved.trim();
+    if (saved && saved.trim() && !saved.includes('dummy_anon_fallback')) {
+      return saved.trim();
+    }
   } catch {
     // Ignore
   }
-  return (import.meta.env.VITE_SUPABASE_ANON_KEY || FALLBACK_ANON_KEY).trim();
+  
+  const envKey = (import.meta.env.VITE_SUPABASE_ANON_KEY || '').trim();
+  if (envKey && !envKey.includes('dummy_anon_fallback')) {
+    return envKey;
+  }
+
+  // Return empty string if no valid key is configured so caller receives clear configuration error
+  return '';
 }
 
 function createConfiguredClient(): SupabaseClient {
   const url = getActiveSupabaseUrl();
   const key = getActiveSupabaseAnonKey();
 
-  return createClient(url, key, {
+  if (!key) {
+    console.warn('[SUPABASE] VITE_SUPABASE_ANON_KEY is not configured in Vercel environment variables or Settings.');
+  }
+
+  return createClient(url, key || 'missing_anon_key_please_configure', {
     auth: {
       autoRefreshToken: true,
       persistSession: true,
