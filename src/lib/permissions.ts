@@ -47,6 +47,7 @@ const ROLE_PERMISSIONS: Record<UserRole, Permission[]> = {
     'import:excel', 'export:data',
   ],
   employee: [
+    'onboarding:create',
     'onboarding:view_assigned',
     'credential:view',
     'document:upload', 'document:download',

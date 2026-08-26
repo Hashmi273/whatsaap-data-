@@ -225,7 +225,11 @@ export function RcsForm() {
         if (isEditing) {
           await saveDocumentMetadata('onboarding_records', dbPayload, 'update', { id: newRecordId });
         } else {
-          await saveDocumentMetadata('onboarding_records', dbPayload, 'insert');
+          const saveRes = await saveDocumentMetadata('onboarding_records', dbPayload, 'insert');
+          if (saveRes.success && Array.isArray(saveRes.data) && saveRes.data[0]?.id) {
+            rcsPayload.id = saveRes.data[0].id;
+            dbPayload.id = saveRes.data[0].id;
+          }
         }
       } catch (dbErr) {
         console.warn('DB save note:', dbErr);

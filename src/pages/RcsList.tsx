@@ -231,7 +231,7 @@ export function RcsList() {
   const liveCount = rcsRecords?.filter((r) => r.status === 'live').length || 0;
   const completedCount = rcsRecords?.filter((r) => r.status === 'completed').length || 0;
 
-  const canCreate = profile?.role === 'super_admin' || profile?.role === 'manager';
+  const canCreate = profile?.role !== 'viewer';
   const canDelete = profile?.role === 'super_admin';
 
   return (
