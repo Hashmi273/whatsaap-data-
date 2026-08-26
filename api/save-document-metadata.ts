@@ -31,7 +31,7 @@ const ALLOWED_TABLES = new Set([
 export default async function handler(req: IncomingMessage & { body?: any }, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-user-email, x-session-token');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 200;
@@ -43,6 +43,25 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     res.statusCode = 405;
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify({ success: false, error: 'Method Not Allowed' }));
+    return;
+  }
+
+  // Mandatory App-Level Session Authorization Check
+  const authHeader = (req.headers['authorization'] || '').toString().trim();
+  const sessionToken = (req.headers['x-session-token'] || '').toString().trim();
+  const userId = (req.headers['x-user-id'] || '').toString().trim();
+  const userEmail = (req.headers['x-user-email'] || '').toString().trim();
+
+  if (!authHeader && !sessionToken && !userId && !userEmail) {
+    res.statusCode = 401;
+    res.setHeader('Content-Type', 'application/json');
+    res.end(
+      JSON.stringify({
+        success: false,
+        error: 'Unauthorized: Valid Immense Portal session or user identity token required.',
+        code: 'UNAUTHORIZED_SESSION_REQUIRED',
+      })
+    );
     return;
   }
 
