@@ -211,7 +211,7 @@ export function Settings() {
               <div className="flex items-center justify-between">
                 <span className="text-gray-500 font-medium">Connected Account:</span>
                 <span className="font-mono font-bold text-gray-900 truncate max-w-[200px]">
-                  {gdriveStatus?.targetAccount || 'parvejweb1@gmail.com'}
+                  {gdriveStatus?.isConnected ? (gdriveStatus?.targetAccount || '—') : '—'}
                 </span>
               </div>
               <div className="flex items-center justify-between">
@@ -233,23 +233,27 @@ export function Settings() {
               <div className="flex items-center justify-between">
                 <span className="text-gray-500 font-medium">Google Drive Quota:</span>
                 <span className="font-semibold text-gray-900">
-                  {gdriveStatus?.storageQuota?.usedFormatted || '2.4 GB'} / {gdriveStatus?.storageQuota?.totalFormatted || '15 GB'}
+                  {gdriveStatus?.isConnected && gdriveStatus?.storageQuota
+                    ? `${gdriveStatus.storageQuota.usedFormatted} / ${gdriveStatus.storageQuota.totalFormatted}`
+                    : '—'}
                 </span>
               </div>
               {/* Progress bar */}
               <div className="w-full bg-gray-200 rounded-full h-2 overflow-hidden">
                 <div
                   className={`h-2 rounded-full transition-all ${
-                    (gdriveStatus?.storageQuota?.usagePercent || 16) >= 80
+                    (gdriveStatus?.storageQuota?.usagePercent ?? 0) >= 80
                       ? 'bg-red-500'
                       : 'bg-[#1677FF]'
                   }`}
-                  style={{ width: `${gdriveStatus?.storageQuota?.usagePercent || 16}%` }}
+                  style={{ width: `${gdriveStatus?.isConnected ? (gdriveStatus?.storageQuota?.usagePercent ?? 0) : 0}%` }}
                 />
               </div>
               <div className="flex items-center justify-between text-[11px] text-gray-400">
                 <span>Usage</span>
-                <span>{gdriveStatus?.storageQuota?.usagePercent || 16}% consumed</span>
+                <span>
+                  {gdriveStatus?.isConnected ? `${gdriveStatus?.storageQuota?.usagePercent ?? 0}% consumed` : 'Not connected'}
+                </span>
               </div>
             </div>
           </div>
