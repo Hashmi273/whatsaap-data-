@@ -1,8 +1,16 @@
 {
   "rewrites": [
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/google-drive-auth", "destination": "/api/google-drive?action=auth" },
+    { "source": "/api/google-drive-callback", "destination": "/api/google-drive?action=callback" },
+    { "source": "/api/google-drive-status", "destination": "/api/google-drive?action=status" },
+    { "source": "/api/google-drive-backup", "destination": "/api/google-drive?action=backup" },
+    { "source": "/api/google-drive-disconnect", "destination": "/api/google-drive?action=disconnect" },
+    { "source": "/api/google-drive-diagnostic", "destination": "/api/google-drive?action=diagnostic" },
+    { "source": "/api/upload-document", "destination": "/api/document?action=upload" },
+    { "source": "/api/download-document", "destination": "/api/document?action=download" },
+    { "source": "/api/save-document-metadata", "destination": "/api/document?action=save-metadata" },
+    { "source": "/api/send-admin-otp", "destination": "/api/admin-otp?action=send" },
+    { "source": "/api/verify-admin-otp", "destination": "/api/admin-otp?action=verify" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }
