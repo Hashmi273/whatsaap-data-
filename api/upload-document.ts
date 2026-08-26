@@ -72,10 +72,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       process.env.SUPABASE_SERVICE_KEY ||
       process.env.SUPABASE_SECRET_KEY ||
       process.env.SERVICE_ROLE_KEY ||
-      process.env.SUPABASE_KEY ||
-      process.env.SUPABASE_ANON_KEY ||
-      process.env.VITE_SUPABASE_ANON_KEY ||
-      tokenFromHeader ||
       ''
     ).trim();
 

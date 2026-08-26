@@ -7,18 +7,24 @@ function getSupabaseCredentials() {
     'https://ztrskyefkugevypzfecl.supabase.co'
   ).replace(/\/+$/, '');
 
-  const supabaseServiceKey = (
-    process.env.SUPABASE_SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_SERVICE_KEY ||
-    process.env.SUPABASE_SECRET_KEY ||
-    process.env.SERVICE_ROLE_KEY ||
-    process.env.SUPABASE_KEY ||
+  const anonKey = (
     process.env.SUPABASE_ANON_KEY ||
     process.env.VITE_SUPABASE_ANON_KEY ||
     ''
   ).trim();
 
-  return { supabaseUrl, supabaseServiceKey };
+  // ONLY service-role environment keys — NEVER fallback to public anon key
+  let serviceKey = (
+    process.env.SUPABASE_SERVICE_ROLE_KEY ||
+    process.env.SUPABASE_SERVICE_KEY ||
+    process.env.SUPABASE_SECRET_KEY ||
+    process.env.SERVICE_ROLE_KEY ||
+    ''
+  ).trim();
+
+  const isUsingAnonKey = Boolean(serviceKey && anonKey && serviceKey === anonKey);
+
+  return { supabaseUrl, supabaseServiceKey: serviceKey, isUsingAnonKey };
 }
 
 const ALLOWED_TABLES = new Set([
@@ -105,7 +111,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
-    const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
+    const { supabaseUrl, supabaseServiceKey, isUsingAnonKey } = getSupabaseCredentials();
 
     if (!supabaseServiceKey) {
       res.statusCode = 500;
@@ -113,7 +119,21 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       res.end(
         JSON.stringify({
           success: false,
-          error: 'SUPABASE_SERVICE_ROLE_KEY is not configured in Vercel environment variables.',
+          error: 'SUPABASE_SERVICE_ROLE_KEY is not configured in Vercel environment variables. Please add SUPABASE_SERVICE_ROLE_KEY in Vercel Project Settings.',
+          code: 'MISSING_SERVICE_ROLE_KEY',
+        })
+      );
+      return;
+    }
+
+    if (isUsingAnonKey) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(
+        JSON.stringify({
+          success: false,
+          error: 'SUPABASE_SERVICE_ROLE_KEY is configured with an anon key instead of the service_role secret. Please update SUPABASE_SERVICE_ROLE_KEY in Vercel with the service_role secret from Supabase Dashboard -> Project Settings -> API.',
+          code: 'INVALID_SERVICE_ROLE_KEY',
         })
       );
       return;
