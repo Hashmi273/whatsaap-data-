@@ -6,6 +6,7 @@
 // ============================================================
 
 import { supabase } from './supabase';
+import { saveDocumentMetadata } from './storage';
 
 export type AuditAction =
   | 'login'
@@ -46,7 +47,7 @@ export async function logAudit(
   try {
     const userAgent = navigator.userAgent || 'unknown';
 
-    await supabase.from('audit_logs').insert({
+    await saveDocumentMetadata('audit_logs', {
       action,
       entity_type: entityType,
       entity_id: entityId || null,
@@ -56,7 +57,7 @@ export async function logAudit(
         timestamp: new Date().toISOString(),
       },
       user_agent: userAgent,
-    });
+    }, 'insert');
   } catch (error) {
     console.error('Audit log notice (non-blocking):', error);
   }

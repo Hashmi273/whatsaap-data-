@@ -31,6 +31,7 @@ import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData
 import { isValidUuid } from '@/lib/constants';
 import { format } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
+import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
 
 export function DocumentVault() {
   const navigate = useNavigate();
@@ -224,7 +225,7 @@ export function DocumentVault() {
       }
 
       try {
-        await supabase.from('onboarding_documents').insert(docPayload);
+        await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
       } catch (metaErr) {
         console.warn('Metadata insert note:', metaErr);
       }
@@ -294,7 +295,7 @@ export function DocumentVault() {
       }
 
       try {
-        await supabase.from('onboarding_documents').delete().eq('id', doc.id);
+        await saveDocumentMetadata('onboarding_documents', null, 'delete', { id: doc.id });
       } catch {
         // Ignore
       }

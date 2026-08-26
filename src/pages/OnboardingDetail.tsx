@@ -46,7 +46,7 @@ import { hasPermission } from '@/lib/permissions';
 import { isValidUuid } from '@/lib/constants';
 import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
-import { uploadDocumentToStorage } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
 import {
   CATEGORY_OPTIONS,
   STATUS_OPTIONS,
@@ -408,9 +408,9 @@ export function OnboardingDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      const { error: insertErr } = await supabase.from('onboarding_documents').insert(docPayload);
-      if (insertErr) {
-        throw new Error(`Database record failed: ${insertErr.message}`);
+      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
+      if (!saveRes.success) {
+        throw new Error(`Database record failed: ${saveRes.error}`);
       }
 
       // 3. Log Audit
@@ -588,11 +588,14 @@ export function OnboardingDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      await supabase.from('onboarding_documents').insert(docPayload);
+      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
+      if (!saveRes.success) {
+        throw new Error(`Database record failed: ${saveRes.error}`);
+      }
 
       // Remove old document record if exists
       if (docToReplace.id && isValidUuid(docToReplace.id)) {
-        await supabase.from('onboarding_documents').delete().eq('id', docToReplace.id);
+        await saveDocumentMetadata('onboarding_documents', null, 'delete', { id: docToReplace.id });
       }
 
       await logAudit('document_uploaded', 'document', id, {

@@ -51,7 +51,7 @@ import { isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
-import { uploadDocumentToStorage } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
 
 export function RcsDetail() {
   const { id } = useParams<{ id: string }>();
@@ -216,9 +216,9 @@ export function RcsDetail() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      const { error: insertErr } = await supabase.from('onboarding_documents').insert(docPayload);
-      if (insertErr) {
-        throw new Error(`Database record failed: ${insertErr.message}`);
+      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
+      if (!saveRes.success) {
+        throw new Error(`Database record failed: ${saveRes.error}`);
       }
 
       // 3. Local Blob Preview Generation

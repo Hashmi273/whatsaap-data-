@@ -70,3 +70,37 @@ export async function uploadDocumentToStorage(
     return { success: false, error: serverErr.message || 'Network error during document upload.' };
   }
 }
+
+/**
+ * Saves metadata to PostgreSQL tables (onboarding_documents, onboarding_records, etc.)
+ * using serverless API route /api/save-document-metadata backed by Service Role key.
+ */
+export async function saveDocumentMetadata(
+  table: string,
+  payload: any,
+  action: 'insert' | 'upsert' | 'update' | 'delete' = 'insert',
+  match?: Record<string, any>
+): Promise<{ success: boolean; data?: any; error?: string }> {
+  try {
+    const res = await fetch('/api/save-document-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        table,
+        payload,
+        action,
+        match,
+      }),
+    });
+
+    const resData = await res.json().catch(() => ({}));
+    if (res.ok && resData.success) {
+      return { success: true, data: resData.data };
+    } else {
+      const errorMsg = resData.error || `Server metadata save failed (HTTP ${res.status})`;
+      return { success: false, error: errorMsg };
+    }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error saving metadata.' };
+  }
+}

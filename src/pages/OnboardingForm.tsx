@@ -35,7 +35,7 @@ import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { OnboardingRecord, Profile, DocumentCategory } from '@/types/database';
 import { format } from 'date-fns';
 
-import { uploadDocumentToStorage } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
 
 const onboardingSchema = z.object({
   brand_name: z.string().min(1, 'Brand Name is required'),
@@ -208,7 +208,7 @@ export function OnboardingForm() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      await supabase.from('onboarding_documents').insert(docPayload);
+      await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
     } catch (err) {
       console.warn('Doc upload helper error:', err);
     }
@@ -300,14 +300,9 @@ export function OnboardingForm() {
         let newRecordId: string | null = null;
 
         try {
-          const { data: newRecord, error } = await supabase
-            .from('onboarding_records')
-            .insert(insertPayload)
-            .select('id')
-            .single();
-
-          if (!error && newRecord?.id) {
-            newRecordId = newRecord.id;
+          const res = await saveDocumentMetadata('onboarding_records', insertPayload, 'insert');
+          if (res.success && Array.isArray(res.data) && res.data[0]?.id) {
+            newRecordId = res.data[0].id;
           }
         } catch (dbErr) {
           console.warn('Database insert note:', dbErr);

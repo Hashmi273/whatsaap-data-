@@ -25,7 +25,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { SubmissionSuccessModal } from '@/components/shared/SubmissionSuccessModal';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
-import { uploadDocumentToStorage } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
 import { isValidUuid } from '@/lib/constants';
 import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile, DocumentCategory } from '@/types/database';
@@ -162,7 +162,7 @@ export function RcsForm() {
         docPayload.uploaded_by = uploaderId;
       }
 
-      await supabase.from('onboarding_documents').insert(docPayload);
+      await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
     } catch (err) {
       console.warn('Doc upload helper error:', err);
     }
@@ -223,9 +223,9 @@ export function RcsForm() {
 
       try {
         if (isEditing) {
-          await supabase.from('onboarding_records').update(dbPayload).eq('id', newRecordId);
+          await saveDocumentMetadata('onboarding_records', dbPayload, 'update', { id: newRecordId });
         } else {
-          await supabase.from('onboarding_records').insert(dbPayload);
+          await saveDocumentMetadata('onboarding_records', dbPayload, 'insert');
         }
       } catch (dbErr) {
         console.warn('DB save note:', dbErr);
