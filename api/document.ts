@@ -510,7 +510,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
               company_name: payload.company_name || 'Immense Client',
               whatsapp_number: payload.whatsapp_number || '+91 99999 99999',
               platform: 'WhatsApp Onboarding',
-              status: 'submitted',
+              status: 'pending',
               created_by: verifiedUserId,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
