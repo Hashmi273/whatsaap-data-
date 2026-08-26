@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
+import { hasPermission } from '@/lib/permissions';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
@@ -425,8 +426,8 @@ export function RcsDetail() {
   // Filter compliance & other documents
   const complianceDocs = documents?.filter((d) => d.category !== 'logo' && d.category !== 'banner_creative') || [];
 
-  const canEdit = profile?.role !== 'viewer';
-  const canDelete = profile?.role === 'super_admin';
+  const canEdit = hasPermission(profile?.role, 'onboarding:edit');
+  const canDelete = hasPermission(profile?.role, 'onboarding:delete');
 
   return (
     <PageLayout title={`RCS Vault: ${record.brand_name}`}>

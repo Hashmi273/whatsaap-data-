@@ -25,6 +25,7 @@ import {
   Legend
 } from 'recharts';
 import { useAuth } from '@/lib/auth';
+import { hasPermission } from '@/lib/permissions';
 import { supabase } from '@/lib/supabase';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { StatusBadge } from '@/components/shared/StatusBadge';
@@ -130,7 +131,7 @@ export function Dashboard() {
     { name: 'Rejected', value: stats?.rejected || 0, color: '#EF4444' },
   ].filter((d) => d.value > 0);
 
-  const canManage = profile?.role !== 'viewer';
+  const canManage = hasPermission(profile?.role, 'onboarding:create');
 
   return (
     <PageLayout title="Dashboard">

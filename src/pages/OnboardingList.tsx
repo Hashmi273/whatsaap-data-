@@ -158,7 +158,7 @@ export function OnboardingList() {
     return 0;
   });
 
-  const canCreate = profile?.role !== 'viewer';
+  const canCreate = hasPermission(profile?.role, 'onboarding:create');
   const canEdit = hasPermission(profile?.role, 'onboarding:edit');
   const canDelete = hasPermission(profile?.role, 'onboarding:delete');
   const canImport = hasPermission(profile?.role, 'import:excel');

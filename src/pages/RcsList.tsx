@@ -29,6 +29,7 @@ import { EmptyState } from '@/components/shared/EmptyState';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
+import { hasPermission } from '@/lib/permissions';
 import { STATUS_OPTIONS } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile } from '@/types/database';
 import { saveDocumentMetadata } from '@/lib/storage';
@@ -231,8 +232,8 @@ export function RcsList() {
   const liveCount = rcsRecords?.filter((r) => r.status === 'live').length || 0;
   const completedCount = rcsRecords?.filter((r) => r.status === 'completed').length || 0;
 
-  const canCreate = profile?.role !== 'viewer';
-  const canDelete = profile?.role === 'super_admin';
+  const canCreate = hasPermission(profile?.role, 'onboarding:create');
+  const canDelete = hasPermission(profile?.role, 'onboarding:delete');
 
   return (
     <PageLayout title="RCS Onboarding">
