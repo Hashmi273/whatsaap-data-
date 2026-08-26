@@ -130,7 +130,7 @@ export function Dashboard() {
     { name: 'Rejected', value: stats?.rejected || 0, color: '#EF4444' },
   ].filter((d) => d.value > 0);
 
-  const canManage = profile?.role === 'super_admin' || profile?.role === 'manager';
+  const canManage = profile?.role !== 'viewer';
 
   return (
     <PageLayout title="Dashboard">

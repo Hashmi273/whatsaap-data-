@@ -425,7 +425,7 @@ export function RcsDetail() {
   // Filter compliance & other documents
   const complianceDocs = documents?.filter((d) => d.category !== 'logo' && d.category !== 'banner_creative') || [];
 
-  const canEdit = profile?.role === 'super_admin' || profile?.role === 'manager';
+  const canEdit = profile?.role !== 'viewer';
   const canDelete = profile?.role === 'super_admin';
 
   return (

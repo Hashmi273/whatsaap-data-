@@ -61,12 +61,16 @@ export function App() {
                 <Route path="/profile" element={<Profile />} />
               </Route>
 
-              {/* Protected Admin/Manager Routes */}
-              <Route element={<ProtectedRoute allowedRoles={['super_admin', 'manager']} />}>
+              {/* Protected Creation & Edit Routes (Available to all non-viewer roles) */}
+              <Route element={<ProtectedRoute allowedRoles={['super_admin', 'manager', 'employee']} />}>
                 <Route path="/onboarding/new" element={<OnboardingForm />} />
                 <Route path="/onboarding/:id/edit" element={<OnboardingForm />} />
                 <Route path="/rcs/new" element={<RcsForm />} />
                 <Route path="/rcs/:id/edit" element={<RcsForm />} />
+              </Route>
+
+              {/* Protected Management Routes (Super Admin & Manager) */}
+              <Route element={<ProtectedRoute allowedRoles={['super_admin', 'manager']} />}>
                 <Route path="/activity" element={<ActivityLogs />} />
               </Route>
 
