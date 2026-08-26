@@ -1,4 +1,13 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import crypto from 'crypto';
+
+function createSignedPortalToken(userId: string, email: string, role: string, secret: string): string {
+  const expiresAt = Date.now() + 14 * 24 * 60 * 60 * 1000;
+  const payloadStr = `${userId}:${email}:${role}:${expiresAt}`;
+  const signature = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
+  const payloadBase64 = Buffer.from(payloadStr).toString('base64url');
+  return `immense_s1_${payloadBase64}.${signature}`;
+}
 
 interface LoginRequestBody {
   email: string;
@@ -299,6 +308,16 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       } catch {
         // Ignore
       }
+    }
+
+    if (!authSession && supabaseServiceKey) {
+      const access_token = createSignedPortalToken(userProfile.id, cleanEmail, userProfile.role, supabaseServiceKey);
+      authSession = {
+        access_token,
+        token_type: 'bearer',
+        expires_in: 1209600,
+        user: userProfile,
+      };
     }
 
     console.log(`[AUTH-LOGIN] Authentication successful for: ${cleanEmail} (Role: ${userProfile.role})`);

@@ -51,6 +51,47 @@ function getSupabaseCredentials() {
   return { supabaseUrl, supabaseServiceKey: serviceKey, isUsingAnonKey };
 }
 
+import crypto from 'crypto';
+
+export function createSignedPortalToken(userId: string, email: string, role: string, secret: string): string {
+  const expiresAt = Date.now() + 14 * 24 * 60 * 60 * 1000;
+  const payloadStr = `${userId}:${email}:${role}:${expiresAt}`;
+  const signature = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
+  const payloadBase64 = Buffer.from(payloadStr).toString('base64url');
+  return `immense_s1_${payloadBase64}.${signature}`;
+}
+
+export function verifySignedPortalToken(token: string, secret: string): { valid: boolean; userId?: string; email?: string; role?: string } {
+  if (!token || !token.startsWith('immense_s1_')) {
+    return { valid: false };
+  }
+
+  try {
+    const raw = token.slice('immense_s1_'.length);
+    const parts = raw.split('.');
+    if (parts.length !== 2) return { valid: false };
+
+    const [payloadBase64, signature] = parts;
+    const payloadStr = Buffer.from(payloadBase64, 'base64url').toString('utf8');
+    const expectedSignature = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
+
+    if (signature !== expectedSignature) {
+      return { valid: false };
+    }
+
+    const [userId, email, role, expiresAtStr] = payloadStr.split(':');
+    const expiresAt = parseInt(expiresAtStr, 10);
+
+    if (isNaN(expiresAt) || Date.now() > expiresAt) {
+      return { valid: false };
+    }
+
+    return { valid: true, userId, email, role };
+  } catch {
+    return { valid: false };
+  }
+}
+
 // ----------------------------------------------------------------------------
 // SERVER-SIDE CRYPTOGRAPHIC AUTHENTICATION & AUTHORIZATION VERIFIER
 // ----------------------------------------------------------------------------
@@ -73,8 +114,19 @@ async function verifyServerSession(req: IncomingMessage): Promise<{
     return { authenticated: false, error: 'Server configuration error: Service role missing.' };
   }
 
+  // 1. First check HMAC signed portal token
+  const portalCheck = verifySignedPortalToken(token, supabaseServiceKey);
+  if (portalCheck.valid && portalCheck.userId) {
+    return {
+      authenticated: true,
+      userId: portalCheck.userId,
+      email: portalCheck.email,
+      role: portalCheck.role || 'employee',
+    };
+  }
+
+  // 2. Fallback to Supabase Auth REST user endpoint
   try {
-    // 1. Verify token with Supabase Auth REST user endpoint
     const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
       headers: {
         apikey: supabaseServiceKey,
@@ -82,47 +134,39 @@ async function verifyServerSession(req: IncomingMessage): Promise<{
       },
     });
 
-    if (!userRes.ok) {
-      return { authenticated: false, error: 'Unauthorized: Invalid or expired Bearer token.' };
-    }
-
-    const userData: any = await userRes.json().catch(() => ({}));
-    if (!userData || !userData.id) {
-      return { authenticated: false, error: 'Unauthorized: Token user verification failed.' };
-    }
-
-    const userId = userData.id;
-    const email = (userData.email || '').toLowerCase().trim();
-
-    // 2. Fetch authoritative user role from Postgres profiles table
-    let role = 'employee';
-    try {
-      const profileRes = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${userId}&select=role,is_active`, {
-        headers: {
-          apikey: supabaseServiceKey,
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-      });
-
-      if (profileRes.ok) {
-        const profiles: any[] = (await profileRes.json().catch(() => [])) as any[];
-        if (Array.isArray(profiles) && profiles.length > 0) {
-          if (profiles[0].is_active === false) {
-            return { authenticated: false, error: 'Unauthorized: User account has been deactivated.' };
+    if (userRes.ok) {
+      const userData: any = await userRes.json().catch(() => ({}));
+      if (userData && userData.id) {
+        const userId = userData.id;
+        const email = (userData.email || '').toLowerCase().trim();
+        let role = 'employee';
+        try {
+          const profileRes = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${userId}&select=role,is_active`, {
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+            },
+          });
+          if (profileRes.ok) {
+            const profiles: any[] = (await profileRes.json().catch(() => [])) as any[];
+            if (Array.isArray(profiles) && profiles.length > 0) {
+              if (profiles[0].is_active === false) {
+                return { authenticated: false, error: 'Unauthorized: Account deactivated.' };
+              }
+              if (profiles[0].role) role = profiles[0].role;
+            }
           }
-          if (profiles[0].role) {
-            role = profiles[0].role;
-          }
+        } catch {
+          // Ignore
         }
+        return { authenticated: true, userId, email, role };
       }
-    } catch {
-      // Fallback role
     }
-
-    return { authenticated: true, userId, email, role };
-  } catch (err: any) {
-    return { authenticated: false, error: `Authentication error: ${err.message}` };
+  } catch {
+    // Ignore
   }
+
+  return { authenticated: false, error: 'Unauthorized: Invalid or expired Bearer token.' };
 }
 
 const ALLOWED_TABLES = new Set([
