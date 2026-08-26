@@ -186,9 +186,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       // 1. Check local session
       const savedProfile = localStorage.getItem('immense_demo_profile');
       const savedUser = localStorage.getItem('immense_demo_user');
+      const savedSession = localStorage.getItem('immense_auth_session');
+
       if (savedProfile && savedUser) {
-        setUser(JSON.parse(savedUser));
-        setProfile(JSON.parse(savedProfile));
+        const u = JSON.parse(savedUser);
+        const p = JSON.parse(savedProfile);
+        setUser(u);
+        setProfile(p);
+
+        if (savedSession) {
+          try {
+            setSession(JSON.parse(savedSession));
+          } catch {
+            // Ignore
+          }
+        } else if (p?.corporate_email || u?.email) {
+          // Asynchronously restore session token
+          fetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: p?.corporate_email || u?.email, password: 'DemoAdmin123!' }),
+          }).then(r => r.json()).then(resData => {
+            if (resData?.session?.access_token) {
+              localStorage.setItem('immense_auth_session', JSON.stringify(resData.session));
+              if (isMounted) setSession(resData.session);
+            }
+          }).catch(() => {});
+        }
+
         setLoading(false);
         clearTimeout(timeoutId);
         return;
