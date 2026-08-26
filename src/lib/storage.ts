@@ -82,24 +82,13 @@ export async function saveDocumentMetadata(
   match?: Record<string, any>
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
-    let userId = '';
-    let userEmail = '';
-    try {
-      const user = JSON.parse(localStorage.getItem('immense_demo_user') || '{}');
-      const profile = JSON.parse(localStorage.getItem('immense_demo_profile') || '{}');
-      userId = profile?.id || user?.id || '';
-      userEmail = profile?.corporate_email || user?.email || '';
-    } catch {
-      // Ignore
-    }
-
     const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
     const token = sessionData?.session?.access_token || '';
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (userId) headers['x-user-id'] = userId;
-    if (userEmail) headers['x-user-email'] = userEmail;
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
 
     const res = await fetch('/api/save-document-metadata', {
       method: 'POST',

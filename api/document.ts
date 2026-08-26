@@ -51,6 +51,80 @@ function getSupabaseCredentials() {
   return { supabaseUrl, supabaseServiceKey: serviceKey, isUsingAnonKey };
 }
 
+// ----------------------------------------------------------------------------
+// SERVER-SIDE CRYPTOGRAPHIC AUTHENTICATION & AUTHORIZATION VERIFIER
+// ----------------------------------------------------------------------------
+async function verifyServerSession(req: IncomingMessage): Promise<{
+  authenticated: boolean;
+  userId?: string;
+  email?: string;
+  role?: string;
+  error?: string;
+}> {
+  const authHeader = (req.headers['authorization'] || '').toString().trim();
+  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+
+  if (!token) {
+    return { authenticated: false, error: 'Unauthorized: Missing Authorization Bearer token.' };
+  }
+
+  const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
+  if (!supabaseUrl || !supabaseServiceKey) {
+    return { authenticated: false, error: 'Server configuration error: Service role missing.' };
+  }
+
+  try {
+    // 1. Verify token with Supabase Auth REST user endpoint
+    const userRes = await fetch(`${supabaseUrl}/auth/v1/user`, {
+      headers: {
+        apikey: supabaseServiceKey,
+        Authorization: `Bearer ${token}`,
+      },
+    });
+
+    if (!userRes.ok) {
+      return { authenticated: false, error: 'Unauthorized: Invalid or expired Bearer token.' };
+    }
+
+    const userData: any = await userRes.json().catch(() => ({}));
+    if (!userData || !userData.id) {
+      return { authenticated: false, error: 'Unauthorized: Token user verification failed.' };
+    }
+
+    const userId = userData.id;
+    const email = (userData.email || '').toLowerCase().trim();
+
+    // 2. Fetch authoritative user role from Postgres profiles table
+    let role = 'employee';
+    try {
+      const profileRes = await fetch(`${supabaseUrl}/rest/v1/profiles?id=eq.${userId}&select=role,is_active`, {
+        headers: {
+          apikey: supabaseServiceKey,
+          Authorization: `Bearer ${supabaseServiceKey}`,
+        },
+      });
+
+      if (profileRes.ok) {
+        const profiles: any[] = (await profileRes.json().catch(() => [])) as any[];
+        if (Array.isArray(profiles) && profiles.length > 0) {
+          if (profiles[0].is_active === false) {
+            return { authenticated: false, error: 'Unauthorized: User account has been deactivated.' };
+          }
+          if (profiles[0].role) {
+            role = profiles[0].role;
+          }
+        }
+      }
+    } catch {
+      // Fallback role
+    }
+
+    return { authenticated: true, userId, email, role };
+  } catch (err: any) {
+    return { authenticated: false, error: `Authentication error: ${err.message}` };
+  }
+}
+
 const ALLOWED_TABLES = new Set([
   'onboarding_documents',
   'onboarding_records',
@@ -61,7 +135,7 @@ const ALLOWED_TABLES = new Set([
 export default async function handler(req: IncomingMessage & { body?: any }, res: ServerResponse) {
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-user-id, x-user-email, x-session-token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
   if (req.method === 'OPTIONS') {
     res.statusCode = 200;
@@ -88,6 +162,15 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       res.statusCode = 405;
       res.setHeader('Content-Type', 'application/json');
       res.end(JSON.stringify({ success: false, error: 'Method Not Allowed' }));
+      return;
+    }
+
+    // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
+    const authSession = await verifyServerSession(req);
+    if (!authSession.authenticated) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: authSession.error || 'Unauthorized' }));
       return;
     }
 
@@ -158,6 +241,15 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
   // --- 2. ACTION: DOWNLOAD ---
   if (action === 'download') {
+    // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
+    const authSession = await verifyServerSession(req);
+    if (!authSession.authenticated) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: authSession.error || 'Unauthorized' }));
+      return;
+    }
+
     const storagePath = urlObj.searchParams.get('path') || '';
     const bucket = urlObj.searchParams.get('bucket') || 'onboarding-documents';
 
@@ -219,17 +311,16 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
-    const authHeader = (req.headers['authorization'] || '').toString().trim();
-    const sessionToken = (req.headers['x-session-token'] || '').toString().trim();
-    const userId = (req.headers['x-user-id'] || '').toString().trim();
-    const userEmail = (req.headers['x-user-email'] || '').toString().trim();
-
-    if (!authHeader && !sessionToken && !userId && !userEmail) {
+    // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
+    const authSession = await verifyServerSession(req);
+    if (!authSession.authenticated) {
       res.statusCode = 401;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: false, error: 'Unauthorized: Session authentication required.', code: 'UNAUTHORIZED_SESSION_REQUIRED' }));
+      res.end(JSON.stringify({ success: false, error: authSession.error || 'Unauthorized' }));
       return;
     }
+
+    const { userId: verifiedUserId, role: userRole } = authSession;
 
     try {
       let body: any = {};
@@ -249,10 +340,26 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
       let { table = 'onboarding_documents', payload, action: dbAction = 'insert', match } = body;
 
+      // 1. Table Access Guard
       if (!ALLOWED_TABLES.has(table)) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({ success: false, error: `Unauthorized table access: ${table}` }));
+        return;
+      }
+
+      // 2. SERVER-SIDE ROLE-BASED AUTHORIZATION ENGINE
+      if (userRole === 'viewer' && dbAction !== 'delete') {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: 'Forbidden: Viewers are not allowed to modify data.' }));
+        return;
+      }
+
+      if (dbAction === 'delete' && userRole !== 'super_admin' && userRole !== 'manager') {
+        res.statusCode = 403;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: false, error: 'Forbidden: Deletion requires Manager or Super Admin role.' }));
         return;
       }
 
@@ -263,9 +370,15 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
-      // --- Strict UUID Sanitization for Postgres Compliance ---
+      // 3. Bind Authenticated Identity (Prevent Ownership / Identity Forgery)
       if (payload && typeof payload === 'object') {
         payload = { ...payload };
+
+        if (table === 'onboarding_documents') {
+          payload.uploaded_by = verifiedUserId;
+        } else if (table === 'onboarding_records' && dbAction === 'insert') {
+          payload.created_by = verifiedUserId;
+        }
 
         if (payload.id && !isValidUuid(payload.id)) {
           payload.id = generateUuid();
@@ -275,23 +388,14 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           payload.onboarding_id = generateUuid();
         }
 
-        if (payload.uploaded_by && !isValidUuid(payload.uploaded_by)) {
-          delete payload.uploaded_by;
-        }
-
         if (payload.assigned_to && !isValidUuid(payload.assigned_to)) {
           delete payload.assigned_to;
-        }
-
-        if (payload.created_by && !isValidUuid(payload.created_by)) {
-          delete payload.created_by;
         }
       }
 
       if (match && typeof match === 'object') {
         match = { ...match };
         if (match.id && !isValidUuid(match.id)) {
-          // If trying to match non-UUID ID that never existed in DB, respond success gracefully
           res.statusCode = 200;
           res.setHeader('Content-Type', 'application/json');
           res.end(JSON.stringify({ success: true, data: [] }));
@@ -317,6 +421,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
               whatsapp_number: payload.whatsapp_number || '+91 99999 99999',
               platform: 'WhatsApp Onboarding',
               status: 'submitted',
+              created_by: verifiedUserId,
               created_at: new Date().toISOString(),
               updated_at: new Date().toISOString(),
             };
