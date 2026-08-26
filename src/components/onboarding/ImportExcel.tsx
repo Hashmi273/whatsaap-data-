@@ -8,6 +8,7 @@ import { useState, useCallback } from 'react';
 import { Upload, FileSpreadsheet, CheckCircle, XCircle, AlertTriangle, X } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
+import { saveDocumentMetadata } from '@/lib/storage';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/lib/toast';
 import { logAudit } from '@/lib/audit';
@@ -138,9 +139,8 @@ export function ImportExcel({ open, onClose, onSuccess }: ImportExcelProps) {
         created_by: profile?.id,
       }));
 
-      const { error } = await supabase.from('onboarding_records').insert(records);
-
-      if (error) throw error;
+      const res = await saveDocumentMetadata('onboarding_records', records, 'insert');
+      if (!res.success) throw new Error(res.error || 'Import failed.');
 
       // SECURITY: Log import without any credential data in metadata
       await logAudit('excel_imported', 'onboarding', undefined, {

@@ -22,6 +22,7 @@ import {
   ShieldAlert
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { fetchDocumentMetadata, saveDocumentMetadata } from '@/lib/storage';
 import { useAuth } from '@/lib/auth';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { StatusBadge } from '@/components/shared/StatusBadge';
@@ -32,7 +33,6 @@ import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
 import { STATUS_OPTIONS } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile } from '@/types/database';
-import { saveDocumentMetadata } from '@/lib/storage';
 import { format } from 'date-fns';
 
 const INITIAL_DEMO_RCS_RECORDS: RcsOnboardingRecord[] = [
@@ -111,8 +111,8 @@ export function RcsList() {
     queryKey: ['team-profiles'],
     queryFn: async () => {
       try {
-        const { data, error } = await supabase.from('profiles').select('*');
-        if (!error && data) return data as Profile[];
+        const res = await fetchDocumentMetadata('profiles', '*');
+        if (res.success && Array.isArray(res.data)) return res.data as Profile[];
       } catch {
         // Ignore
       }
@@ -133,26 +133,22 @@ export function RcsList() {
 
       let dbRcs: RcsOnboardingRecord[] = [];
       try {
-        const { data, error } = await supabase
-          .from('onboarding_records')
-          .select(`
-            *,
-            assigned_profile:profiles!onboarding_records_assigned_to_fkey(id, full_name, corporate_email)
-          `)
-          .eq('platform', 'RCS Business Messaging')
-          .order('created_at', { ascending: false });
+        const res = await fetchDocumentMetadata('onboarding_records', '*', {
+          match: { platform: 'RCS Business Messaging' },
+          order: { column: 'created_at', ascending: false },
+        });
 
-        if (!error && data && data.length > 0) {
-          dbRcs = data.map((d: any) => ({
-            ...d,
-            gst_number: d.notes?.match(/GST:\s*([A-Z0-9]+)/i)?.[1] || d.notes || '—',
-            website: d.login_url || '—',
-            rcs_business_name: d.username || d.brand_name,
-            rcs_agent_id: d.credential_encrypted || 'rcs_agent_default',
+        if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+          dbRcs = res.data.map((r: any) => ({
+            ...r,
+            gst_number: r.notes?.match(/GST:\s*([A-Z0-9]+)/i)?.[1] || '—',
+            website: r.login_url || '—',
+            rcs_business_name: r.username || r.brand_name,
+            rcs_agent_id: r.credential_encrypted || 'rcs_agent_default',
           }));
         }
       } catch {
-        // Fallback
+        // Ignore
       }
 
       const merged = [...localRcs];

@@ -466,6 +466,18 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
         if (table === 'onboarding_documents') {
           payload.uploaded_by = verifiedUserId;
+          if (payload.category) {
+            const cat = String(payload.category).toLowerCase().trim();
+            if (cat === 'logo' || cat === 'banner_creative' || cat === 'hero_banner' || cat === 'banner') {
+              payload.category = 'screenshots';
+            } else if (cat === 'pan_card') {
+              payload.category = 'pan';
+            } else if (cat === 'kyc_document') {
+              payload.category = 'kyc';
+            } else if (cat === 'meta_verification') {
+              payload.category = 'meta_documents';
+            }
+          }
         } else if (table === 'onboarding_records' && dbAction === 'insert') {
           payload.created_by = verifiedUserId;
         }

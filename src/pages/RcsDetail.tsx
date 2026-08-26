@@ -94,18 +94,11 @@ export function RcsDetail() {
         // Ignore
       }
 
-      // Try database
+      // Try authenticated serverless fetch
       try {
-        const { data, error } = await supabase
-          .from('onboarding_records')
-          .select(`
-            *,
-            assigned_profile:profiles!onboarding_records_assigned_to_fkey(id, full_name, corporate_email)
-          `)
-          .eq('id', id)
-          .single();
-
-        if (!error && data) {
+        const res = await fetchDocumentMetadata('onboarding_records', '*', { match: { id } });
+        if (res.success && Array.isArray(res.data) && res.data[0]) {
+          const data = res.data[0];
           return {
             ...data,
             gst_number: data.notes?.match(/GST:\s*([A-Z0-9]+)/i)?.[1] || data.notes || '—',

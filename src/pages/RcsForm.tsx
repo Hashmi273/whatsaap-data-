@@ -25,7 +25,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { SubmissionSuccessModal } from '@/components/shared/SubmissionSuccessModal';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
-import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
+import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
 import { isValidUuid, generateUuid } from '@/lib/constants';
 import { STATUS_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile, DocumentCategory } from '@/types/database';
@@ -75,8 +75,8 @@ export function RcsForm() {
     queryKey: ['team-profiles'],
     queryFn: async () => {
       try {
-        const { data, error } = await supabase.from('profiles').select('*').eq('is_active', true);
-        if (!error && data) return data as Profile[];
+        const res = await fetchDocumentMetadata('profiles', '*', { match: { is_active: true } });
+        if (res.success && Array.isArray(res.data)) return res.data as Profile[];
       } catch {
         // Ignore
       }
@@ -111,27 +111,23 @@ export function RcsForm() {
       // Ignore
     }
 
-    // Try Supabase fetch
-    supabase
-      .from('onboarding_records')
-      .select('*')
-      .eq('id', id)
-      .single()
-      .then(({ data, error }) => {
-        if (!error && data) {
-          setBrandName(data.brand_name || '');
-          setCompanyName(data.company_name || '');
-          setWebsite(data.login_url || '');
-          setContactPerson(data.contact_person || '');
-          setContactNumber(data.contact_number || '');
-          setContactEmail(data.contact_email || '');
-          setRcsBusinessName(data.username || data.brand_name || '');
-          setRcsAgentId(data.credential_encrypted || '');
-          setStatus(data.status || 'pending');
-          setAssignedTo(data.assigned_to || '');
-          setNotes(data.notes || '');
-        }
-      });
+    // Try authenticated serverless fetch
+    fetchDocumentMetadata('onboarding_records', '*', { match: { id } }).then((res) => {
+      if (res.success && Array.isArray(res.data) && res.data[0]) {
+        const data = res.data[0];
+        setBrandName(data.brand_name || '');
+        setCompanyName(data.company_name || '');
+        setWebsite(data.login_url || '');
+        setContactPerson(data.contact_person || '');
+        setContactNumber(data.contact_number || '');
+        setContactEmail(data.contact_email || '');
+        setRcsBusinessName(data.username || data.brand_name || '');
+        setRcsAgentId(data.credential_encrypted || '');
+        setStatus(data.status || 'pending');
+        setAssignedTo(data.assigned_to || '');
+        setNotes(data.notes || '');
+      }
+    });
   }, [id, isEditing]);
 
   // Helper to upload document to storage and cache
