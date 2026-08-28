@@ -23,6 +23,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
+import { getDocumentPreviewUrl } from '@/lib/download';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { formatCategoryLabel, CATEGORY_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
@@ -112,46 +113,8 @@ export function DocumentVault() {
       setPreviewSignedUrl(null);
       return;
     }
-
-    try {
-      // 1. Generate fresh signed URL from Supabase client
-      const { data: signData, error: signErr } = await supabase.storage
-        .from('onboarding-documents')
-        .createSignedUrl(doc.storage_path, 3600);
-
-      if (!signErr && signData?.signedUrl) {
-        setPreviewSignedUrl(signData.signedUrl);
-        return;
-      }
-
-      // 2. Fetch via authenticated serverless endpoint and convert to Blob Object URL
-      const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-      let token = sessionData?.session?.access_token || '';
-      if (!token) {
-        try {
-          const saved = localStorage.getItem('immense_auth_session');
-          if (saved) token = JSON.parse(saved)?.access_token || '';
-        } catch {
-          // Ignore
-        }
-      }
-
-      const headers: Record<string, string> = {};
-      if (token) headers['Authorization'] = `Bearer ${token}`;
-
-      const res = await fetch(`/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}`, { headers });
-      if (res.ok) {
-        const blob = await res.blob();
-        if (blob && blob.size > 0) {
-          const blobUrl = URL.createObjectURL(blob);
-          setPreviewSignedUrl(blobUrl);
-          return;
-        }
-      }
-      setPreviewSignedUrl(null);
-    } catch {
-      setPreviewSignedUrl(null);
-    }
+    const previewUrl = await getDocumentPreviewUrl(doc);
+    setPreviewSignedUrl(previewUrl);
   };
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);

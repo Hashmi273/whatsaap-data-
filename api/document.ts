@@ -120,7 +120,17 @@ async function verifyServerSession(req: IncomingMessage): Promise<{
   error?: string;
 }> {
   const authHeader = (req.headers['authorization'] || '').toString().trim();
-  const token = authHeader.replace(/^Bearer\s+/i, '').trim();
+  let token = authHeader.replace(/^Bearer\s+/i, '').trim();
+
+  // If no Authorization header, check query param 'token' (for <img> / <iframe> previews and direct download links)
+  if (!token) {
+    try {
+      const urlObj = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
+      token = (urlObj.searchParams.get('token') || '').trim();
+    } catch {
+      // Ignore
+    }
+  }
 
   if (!token) {
     return { authenticated: false, error: 'Unauthorized: Missing Authorization Bearer token.' };
@@ -296,6 +306,27 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
+      // Ensure bucket exists in Supabase Storage
+      try {
+        await fetch(`${supabaseUrl}/storage/v1/bucket`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            id: bucket,
+            name: bucket,
+            public: false,
+            file_size_limit: 26214400,
+          }),
+        });
+      } catch {
+        // Bucket probably already exists
+      }
+
+      // Upload file to Supabase Storage
       const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
       const uploadRes = await fetch(uploadUrl, {
         method: 'POST',
@@ -318,7 +349,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: true, path: cleanPath, size: fileBuffer.length }));
+      res.end(JSON.stringify({ success: true, path: cleanPath, bucket, size: fileBuffer.length }));
     } catch (err: any) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
@@ -327,7 +358,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     return;
   }
 
-  // --- 2. ACTION: DOWNLOAD ---
+  // --- 2. ACTION: DOWNLOAD / PREVIEW ---
   if (action === 'download') {
     // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
     const authSession = await verifyServerSession(req);
@@ -340,6 +371,8 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
     const storagePath = urlObj.searchParams.get('path') || '';
     const bucket = urlObj.searchParams.get('bucket') || 'onboarding-documents';
+    const disposition = urlObj.searchParams.get('disposition') === 'inline' ? 'inline' : 'attachment';
+    const customName = urlObj.searchParams.get('name') || '';
 
     if (!storagePath) {
       res.statusCode = 400;
@@ -358,29 +391,74 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
-      const fetchUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
-      const downloadRes = await fetch(fetchUrl, {
+      // 1. Try authenticated download URL
+      const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
+      let downloadRes = await fetch(fetchUrl, {
         headers: {
           apikey: supabaseServiceKey,
           Authorization: `Bearer ${supabaseServiceKey}`,
         },
       });
 
+      // 2. Fallback to signed URL generation if authenticated download route returns not OK
       if (!downloadRes.ok) {
-        res.statusCode = downloadRes.status || 404;
+        try {
+          const signUrl = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
+          const signRes = await fetch(signUrl, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ expiresIn: 3600 }),
+          });
+
+          if (signRes.ok) {
+            const signData: any = await signRes.json().catch(() => ({}));
+            if (signData?.signedURL) {
+              const fullSignedUrl = `${supabaseUrl}/storage/v1${signData.signedURL}`;
+              downloadRes = await fetch(fullSignedUrl);
+            }
+          }
+        } catch {
+          // Ignore
+        }
+      }
+
+      // 3. Fallback to direct object URL
+      if (!downloadRes || !downloadRes.ok) {
+        const directUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
+        downloadRes = await fetch(directUrl, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+      }
+
+      if (!downloadRes || !downloadRes.ok) {
+        res.statusCode = 404;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'Document object not found.' }));
+        res.end(JSON.stringify({
+          success: false,
+          error: 'Document unavailable — storage object not found in private bucket.',
+          path: cleanPath,
+          bucket,
+        }));
         return;
       }
 
       const arrayBuf = await downloadRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuf);
-      const fileName = cleanPath.split('/').pop() || 'downloaded_document';
+      const fileName = customName || cleanPath.split('/').pop() || 'document';
+      const contentType = downloadRes.headers.get('content-type') || 'application/octet-stream';
 
       res.statusCode = 200;
-      res.setHeader('Content-Type', downloadRes.headers.get('content-type') || 'application/octet-stream');
-      res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(fileName)}"`);
+      res.setHeader('Content-Type', contentType);
+      res.setHeader('Content-Disposition', `${disposition}; filename="${encodeURIComponent(fileName)}"`);
       res.setHeader('Content-Length', String(buffer.length));
+      res.setHeader('Cache-Control', 'private, max-age=3600');
       res.end(buffer);
     } catch (err: any) {
       res.statusCode = 500;

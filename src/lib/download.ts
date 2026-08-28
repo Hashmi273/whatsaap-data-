@@ -1,5 +1,6 @@
 import { supabase } from './supabase';
 import { logAudit } from './audit';
+import { getAuthBearerToken } from './storage';
 
 interface DownloadOptions {
   recordId?: string;
@@ -11,6 +12,64 @@ interface DownloadOptions {
 }
 
 let activeDownloads = new Set<string>();
+
+/**
+ * Resolves a valid signed URL or Blob Object URL for document preview.
+ */
+export async function getDocumentPreviewUrl(doc: {
+  file_name: string;
+  storage_path: string;
+  mime_type?: string;
+}): Promise<string | null> {
+  if (!doc.storage_path) return null;
+
+  // 1. Direct signed URL from Supabase client
+  try {
+    const { data: signData, error: signErr } = await supabase.storage
+      .from('onboarding-documents')
+      .createSignedUrl(doc.storage_path, 3600);
+
+    if (!signErr && signData?.signedUrl) {
+      return signData.signedUrl;
+    }
+  } catch {
+    // Ignore
+  }
+
+  // 2. Direct Blob download from Supabase client
+  try {
+    const { data: blobData, error: downloadErr } = await supabase.storage
+      .from('onboarding-documents')
+      .download(doc.storage_path);
+
+    if (!downloadErr && blobData && blobData.size > 0) {
+      return URL.createObjectURL(blobData);
+    }
+  } catch {
+    // Ignore
+  }
+
+  // 3. Fetch via authenticated serverless download API and create Blob URL
+  try {
+    const token = await getAuthBearerToken();
+    const headers: Record<string, string> = {};
+    if (token) headers['Authorization'] = `Bearer ${token}`;
+
+    const endpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline${token ? `&token=${encodeURIComponent(token)}` : ''}`;
+    const res = await fetch(endpoint, { headers });
+
+    if (res.ok) {
+      const blob = await res.blob();
+      if (blob && blob.size > 0) {
+        return URL.createObjectURL(blob);
+      }
+    }
+  } catch {
+    // Ignore
+  }
+
+  return null;
+}
 
 /**
  * Downloads a document from the Document Vault with authentic signed tokens or binary streams,
@@ -52,22 +111,13 @@ export async function downloadDocument(
       // Fallback
     }
 
-    // 2. Fallback to serverless endpoint
+    // 2. Fallback to serverless endpoint with Bearer token and query token
     if (!blob) {
-      const { data: sessionData } = await supabase.auth.getSession().catch(() => ({ data: { session: null } }));
-      let token = sessionData?.session?.access_token || '';
-      if (!token) {
-        try {
-          const saved = localStorage.getItem('immense_auth_session');
-          if (saved) token = JSON.parse(saved)?.access_token || '';
-        } catch {
-          // Ignore
-        }
-      }
+      const token = await getAuthBearerToken();
       const headers: Record<string, string> = {};
       if (token) headers['Authorization'] = `Bearer ${token}`;
 
-      const endpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=attachment`;
+      const endpoint = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=attachment${token ? `&token=${encodeURIComponent(token)}` : ''}`;
       const res = await fetch(endpoint, { headers });
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));

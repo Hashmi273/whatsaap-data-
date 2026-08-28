@@ -23,6 +23,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { EmptyState } from '@/components/shared/EmptyState';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { logAudit } from '@/lib/audit';
+import { getDocumentPreviewUrl, downloadDocument } from '@/lib/download';
 import { useToast } from '@/lib/toast';
 import { CATEGORY_OPTIONS, formatCategoryLabel } from '@/types/database';
 import type {
@@ -32,7 +33,6 @@ import type {
   Profile,
 } from '@/types/database';
 import { format } from 'date-fns';
-import { downloadDocument } from '@/lib/download';
 import { fetchDocumentMetadata } from '@/lib/storage';
 
 type DocumentWithRelations = OnboardingDocument & {
@@ -112,36 +112,8 @@ export function DocumentSearch() {
       setPreviewSignedUrl(null);
       return;
     }
-
-    try {
-      // 1. Generate fresh signed URL from Supabase client
-      const { data: signData, error: signErr } = await supabase.storage
-        .from('onboarding-documents')
-        .createSignedUrl(doc.storage_path, 3600);
-
-      if (!signErr && signData?.signedUrl) {
-        setPreviewSignedUrl(signData.signedUrl);
-        return;
-      }
-
-      // 2. Direct binary download via client session
-      const { data: blobData, error: downloadErr } = await supabase.storage
-        .from('onboarding-documents')
-        .download(doc.storage_path);
-
-      if (!downloadErr && blobData && blobData.size > 0) {
-        const blobUrl = URL.createObjectURL(blobData);
-        setPreviewSignedUrl(blobUrl);
-        return;
-      }
-
-      // 3. Fallback to serverless stream
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
-    } catch {
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
-    }
+    const previewUrl = await getDocumentPreviewUrl(doc);
+    setPreviewSignedUrl(previewUrl);
   };
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);

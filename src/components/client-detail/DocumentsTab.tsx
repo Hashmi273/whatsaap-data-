@@ -6,7 +6,7 @@ import {
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/lib/toast';
 import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
-import { downloadDocument } from '@/lib/download';
+import { downloadDocument, getDocumentPreviewUrl } from '@/lib/download';
 import { supabase } from '@/lib/supabase';
 import { isValidUuid } from '@/lib/constants';
 import { logAudit } from '@/lib/audit';
@@ -98,20 +98,12 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
 
   const handlePreview = async (doc: OnboardingDocument) => {
     setPreviewDoc(doc);
-    if (!doc.storage_path) return setPreviewSignedUrl(null);
-    try {
-      const { data: signData, error: signErr } = await supabase.storage.from('onboarding-documents').createSignedUrl(doc.storage_path, 3600);
-      if (!signErr && signData?.signedUrl) {
-        return setPreviewSignedUrl(signData.signedUrl);
-      }
-      const { data: blobData, error: downloadErr } = await supabase.storage.from('onboarding-documents').download(doc.storage_path);
-      if (!downloadErr && blobData && blobData.size > 0) {
-        return setPreviewSignedUrl(URL.createObjectURL(blobData));
-      }
-      throw new Error();
-    } catch {
-      setPreviewSignedUrl(`/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`);
+    if (!doc.storage_path) {
+      setPreviewSignedUrl(null);
+      return;
     }
+    const previewUrl = await getDocumentPreviewUrl(doc);
+    setPreviewSignedUrl(previewUrl);
   };
 
   const handleDownload = async (doc: OnboardingDocument) => {
@@ -125,9 +117,14 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
 
   const handleDeleteDocument = async (doc: OnboardingDocument) => {
     try {
-      await supabase.storage.from('onboarding-documents').remove([doc.storage_path]);
-      if (doc.id) await supabase.from('onboarding_documents').delete().eq('id', doc.id);
-      await logAudit('document_deleted', 'document', recordId, { file_name: doc.file_name });
+      if (doc.storage_path) {
+        await supabase.storage.from('onboarding-documents').remove([doc.storage_path]).catch(() => {});
+      }
+      if (doc.id) {
+        await saveDocumentMetadata('onboarding_documents', null, 'delete', { id: doc.id });
+        await supabase.from('onboarding_documents').delete().eq('id', doc.id);
+      }
+      await logAudit('document_deleted', 'document', recordId, { file_name: doc.file_name, storage_path: doc.storage_path });
       toast.success('Document Removed', `${doc.file_name} deleted from vault.`);
       setDeleteDoc(null);
       onRefresh();

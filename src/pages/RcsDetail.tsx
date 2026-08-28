@@ -39,6 +39,7 @@ import { StatusBadge } from '@/components/shared/StatusBadge';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { logAudit } from '@/lib/audit';
+import { getDocumentPreviewUrl, downloadDocument } from '@/lib/download';
 import { useToast } from '@/lib/toast';
 import { formatCategoryLabel, CATEGORY_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type {
@@ -50,7 +51,6 @@ import type {
 } from '@/types/database';
 import { isValidUuid } from '@/lib/constants';
 import { format, formatDistanceToNow } from 'date-fns';
-import { downloadDocument } from '@/lib/download';
 import { downloadClientBackupZip } from '@/lib/zipBackup';
 import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
 
@@ -261,36 +261,8 @@ export function RcsDetail() {
       setPreviewSignedUrl(null);
       return;
     }
-
-    try {
-      // 1. Generate fresh signed URL from Supabase client
-      const { data: signData, error: signErr } = await supabase.storage
-        .from('onboarding-documents')
-        .createSignedUrl(doc.storage_path, 3600);
-
-      if (!signErr && signData?.signedUrl) {
-        setPreviewSignedUrl(signData.signedUrl);
-        return;
-      }
-
-      // 2. Direct binary download via client session
-      const { data: blobData, error: downloadErr } = await supabase.storage
-        .from('onboarding-documents')
-        .download(doc.storage_path);
-
-      if (!downloadErr && blobData && blobData.size > 0) {
-        const blobUrl = URL.createObjectURL(blobData);
-        setPreviewSignedUrl(blobUrl);
-        return;
-      }
-
-      // 3. Fallback to serverless stream
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
-    } catch {
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
-    }
+    const previewUrl = await getDocumentPreviewUrl(doc);
+    setPreviewSignedUrl(previewUrl);
   };
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
