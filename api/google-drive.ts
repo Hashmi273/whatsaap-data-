@@ -170,6 +170,163 @@ async function logServerAudit(
 }
 
 // ----------------------------------------------------------------------------
+// MIME Type Resolver
+// ----------------------------------------------------------------------------
+function getMimeType(fileName: string, mimeType?: string): string {
+  if (mimeType && mimeType !== 'application/octet-stream') return mimeType;
+  const lower = (fileName || '').toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (lower.endsWith('.doc')) return 'application/msword';
+  if (lower.endsWith('.xlsx')) return 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+  if (lower.endsWith('.xls')) return 'application/vnd.ms-excel';
+  if (lower.endsWith('.txt')) return 'text/plain';
+  return mimeType || 'application/octet-stream';
+}
+
+// ----------------------------------------------------------------------------
+// Resilient Supabase Storage Binary Downloader
+// ----------------------------------------------------------------------------
+async function fetchFileFromSupabaseStorage(
+  supabaseUrl: string,
+  supabaseServiceKey: string,
+  doc: {
+    id?: string;
+    file_name?: string;
+    original_name?: string;
+    storage_path?: string;
+    category?: string;
+    mime_type?: string;
+    onboarding_id?: string;
+  }
+): Promise<{
+  buffer: Buffer;
+  contentType: string;
+  matchedBucket: string;
+  matchedPath: string;
+}> {
+  const buckets = ['onboarding-documents', 'documents', 'rcs-documents'];
+  const rawPath = (doc.storage_path || '').trim();
+  const cleanPath = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath;
+
+  const candidatePaths: string[] = [];
+  if (cleanPath) {
+    candidatePaths.push(cleanPath);
+    if (cleanPath.startsWith('onboarding-documents/')) {
+      candidatePaths.push(cleanPath.replace(/^onboarding-documents\//, ''));
+    }
+  }
+
+  const fileName = doc.file_name || doc.original_name || '';
+  if (doc.onboarding_id && doc.category && fileName) {
+    candidatePaths.push(`${doc.onboarding_id}/${doc.category}/${fileName}`);
+    candidatePaths.push(`${doc.onboarding_id}/${fileName}`);
+  }
+  if (fileName) {
+    candidatePaths.push(fileName);
+  }
+
+  // Remove duplicates and empty strings
+  const uniquePaths = Array.from(new Set(candidatePaths.filter(Boolean)));
+
+  let lastStatus = 404;
+  let lastError = '';
+
+  for (const bucket of buckets) {
+    for (const p of uniquePaths) {
+      const encodedPath = encodeURIComponent(p).replace(/%2F/g, '/');
+
+      // Method 1: Authenticated endpoint
+      try {
+        const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedPath}`;
+        const res = await fetch(fetchUrl, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+
+        if (res.ok) {
+          const arrayBuf = await res.arrayBuffer();
+          if (arrayBuf.byteLength > 0) {
+            const buffer = Buffer.from(arrayBuf);
+            const contentType = getMimeType(fileName || p, res.headers.get('content-type') || doc.mime_type);
+            return { buffer, contentType, matchedBucket: bucket, matchedPath: p };
+          }
+        } else {
+          lastStatus = res.status;
+          lastError = await res.text().catch(() => '');
+        }
+      } catch {
+        // Fall through
+      }
+
+      // Method 2: Signed URL download
+      try {
+        const signUrl = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodedPath}`;
+        const signRes = await fetch(signUrl, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({ expiresIn: 3600 }),
+        });
+
+        if (signRes.ok) {
+          const signData: any = await signRes.json().catch(() => ({}));
+          if (signData?.signedURL) {
+            const fullSignedUrl = `${supabaseUrl}/storage/v1${signData.signedURL}`;
+            const downloadRes = await fetch(fullSignedUrl);
+            if (downloadRes.ok) {
+              const arrayBuf = await downloadRes.arrayBuffer();
+              if (arrayBuf.byteLength > 0) {
+                const buffer = Buffer.from(arrayBuf);
+                const contentType = getMimeType(fileName || p, downloadRes.headers.get('content-type') || doc.mime_type);
+                return { buffer, contentType, matchedBucket: bucket, matchedPath: p };
+              }
+            }
+          }
+        }
+      } catch {
+        // Fall through
+      }
+
+      // Method 3: Direct object URL
+      try {
+        const directUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodedPath}`;
+        const directRes = await fetch(directUrl, {
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+          },
+        });
+
+        if (directRes.ok) {
+          const arrayBuf = await directRes.arrayBuffer();
+          if (arrayBuf.byteLength > 0) {
+            const buffer = Buffer.from(arrayBuf);
+            const contentType = getMimeType(fileName || p, directRes.headers.get('content-type') || doc.mime_type);
+            return { buffer, contentType, matchedBucket: bucket, matchedPath: p };
+          }
+        }
+      } catch {
+        // Fall through
+      }
+    }
+  }
+
+  throw new Error(
+    `Storage binary not found in private bucket for "${fileName || cleanPath}" (HTTP ${lastStatus}). Path tried: ${cleanPath || 'none'}. ${lastError ? `[Details: ${lastError.slice(0, 150)}]` : ''}`
+  );
+}
+
+// ----------------------------------------------------------------------------
 // Google OAuth Token Resolver & Auto-Refresher
 // ----------------------------------------------------------------------------
 async function resolveGoogleDriveToken(): Promise<{
@@ -422,12 +579,15 @@ async function uploadFileToDrive(
   fileBuffer: Buffer,
   parentFolderId: string
 ): Promise<{ id: string; name: string; size: number; url: string }> {
-  const boundary = '-------immense_dr_boundary_' + Date.now();
+  const boundary = '-------immense_dr_boundary_' + Date.now() + '_' + Math.random().toString(36).slice(2);
   const delimiter = `\r\n--${boundary}\r\n`;
   const closeDelimiter = `\r\n--${boundary}--`;
 
+  const safeFileName = fileName || 'document';
+  const cleanMimeType = getMimeType(safeFileName, mimeType);
+
   const metadata = {
-    name: fileName,
+    name: safeFileName,
     parents: [parentFolderId],
     description: `IMMENSE Document Vault DR Backup • Verified Archive`,
   };
@@ -438,7 +598,7 @@ async function uploadFileToDrive(
       'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
       JSON.stringify(metadata) +
       delimiter +
-      `Content-Type: ${mimeType || 'application/octet-stream'}\r\n\r\n`
+      `Content-Type: ${cleanMimeType}\r\n\r\n`
     ),
     fileBuffer,
     Buffer.from(closeDelimiter),
@@ -459,8 +619,8 @@ async function uploadFileToDrive(
 
   const uploadData: any = await uploadRes.json().catch(() => ({}));
   if (!uploadRes.ok || !uploadData?.id) {
-    const errText = uploadData?.error?.message || uploadRes.statusText;
-    throw new Error(`Drive file upload failed for "${fileName}": ${errText}`);
+    const errText = uploadData?.error?.message || uploadRes.statusText || 'Unknown upload error';
+    throw new Error(`Google Drive API upload failed for "${safeFileName}" (HTTP ${uploadRes.status}): ${errText}`);
   }
 
   return {
@@ -829,24 +989,12 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         if (!docRecord) {
           res.statusCode = 404;
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: 'Document record not found.' }));
+          res.end(JSON.stringify({ success: false, error: 'Document record not found in database.' }));
           return;
         }
 
-        // Fetch binary from Supabase Storage
-        const cleanPath = docRecord.storage_path.startsWith('/') ? docRecord.storage_path.slice(1) : docRecord.storage_path;
-        const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/onboarding-documents/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
-        const fileRes = await fetch(fetchUrl, {
-          headers: { apikey: supabaseServiceKey, Authorization: `Bearer ${supabaseServiceKey}` },
-        });
-
-        if (!fileRes.ok) {
-          const errText = await fileRes.text().catch(() => '');
-          throw new Error(`File binary not found in storage: ${errText}`);
-        }
-
-        const arrayBuf = await fileRes.arrayBuffer();
-        const fileBuffer = Buffer.from(arrayBuf);
+        // Resiliently fetch binary from Supabase Storage
+        const fileResult = await fetchFileFromSupabaseStorage(supabaseUrl, supabaseServiceKey, docRecord);
 
         // Ensure hierarchy & resolve category folder
         const { subFolders } = await ensureImmenseDriveHierarchy(accessToken);
@@ -856,9 +1004,9 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         // Upload to Drive
         const uploaded = await uploadFileToDrive(
           accessToken,
-          docRecord.file_name || 'document',
-          docRecord.mime_type || 'application/octet-stream',
-          fileBuffer,
+          docRecord.file_name || docRecord.original_name || 'document',
+          fileResult.contentType || docRecord.mime_type || 'application/octet-stream',
+          fileResult.buffer,
           targetFolderId
         );
 
@@ -877,6 +1025,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
             drive_folder_id: targetFolderId,
             drive_web_url: uploaded.url,
             drive_backup_error: null,
+            file_size: fileResult.buffer.length,
           }),
         });
 
@@ -942,7 +1091,8 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       let alreadyBackedUp = 0;
       let newlyBackedUp = 0;
       let failedCount = 0;
-      const failedDocuments: string[] = [];
+      const failedDocuments: Array<{ id: string; name: string; category: string; reason: string }> = [];
+      const failedDocumentNames: string[] = [];
 
       if (Array.isArray(allDocs)) {
         for (const doc of allDocs) {
@@ -952,26 +1102,16 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
           }
 
           try {
-            const cleanPath = doc.storage_path.startsWith('/') ? doc.storage_path.slice(1) : doc.storage_path;
-            const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/onboarding-documents/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
-            const fileRes = await fetch(fetchUrl, {
-              headers: { apikey: supabaseServiceKey, Authorization: `Bearer ${supabaseServiceKey}` },
-            });
-
-            if (!fileRes.ok) {
-              throw new Error(`File not in Supabase storage: HTTP ${fileRes.status}`);
-            }
-
-            const arrayBuf = await fileRes.arrayBuffer();
-            const fileBuffer = Buffer.from(arrayBuf);
+            // Resiliently fetch binary from Supabase Storage
+            const fileResult = await fetchFileFromSupabaseStorage(supabaseUrl, supabaseServiceKey, doc);
             const folderName = mapDocCategoryToFolderName(doc.category);
             const targetFolderId = subFolders[folderName];
 
             const uploaded = await uploadFileToDrive(
               accessToken,
-              doc.file_name || 'document',
-              doc.mime_type || 'application/octet-stream',
-              fileBuffer,
+              doc.file_name || doc.original_name || 'document',
+              fileResult.contentType || doc.mime_type || 'application/octet-stream',
+              fileResult.buffer,
               targetFolderId
             );
 
@@ -989,13 +1129,22 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
                 drive_folder_id: targetFolderId,
                 drive_web_url: uploaded.url,
                 drive_backup_error: null,
+                file_size: fileResult.buffer.length,
               }),
             });
 
             newlyBackedUp++;
           } catch (itemErr: any) {
             failedCount++;
-            failedDocuments.push(doc.file_name || doc.id);
+            const docName = doc.file_name || doc.original_name || doc.id;
+            failedDocumentNames.push(docName);
+            failedDocuments.push({
+              id: doc.id,
+              name: docName,
+              category: doc.category || 'other',
+              reason: itemErr.message,
+            });
+
             await fetch(`${supabaseUrl}/rest/v1/onboarding_documents?id=eq.${doc.id}`, {
               method: 'PATCH',
               headers: {
@@ -1043,6 +1192,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         newlyBackedUp,
         failedCount,
         failedDocuments,
+        failedDocumentNames,
         lastBackupAt: backupTimestamp,
       }));
       return;
@@ -1155,7 +1305,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       const arrayBuf = await driveDownloadRes.arrayBuffer();
       const fileBuffer = Buffer.from(arrayBuf);
       const cleanPath = targetStoragePath.startsWith('/') ? targetStoragePath.slice(1) : targetStoragePath;
-      const contentType = docRecord?.mime_type || driveDownloadRes.headers.get('content-type') || 'application/octet-stream';
+      const contentType = getMimeType(docRecord?.file_name || cleanPath, driveDownloadRes.headers.get('content-type') || docRecord?.mime_type);
 
       // Restore to Supabase Storage
       const uploadUrl = `${supabaseUrl}/storage/v1/object/onboarding-documents/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;

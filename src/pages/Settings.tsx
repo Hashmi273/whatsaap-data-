@@ -117,6 +117,46 @@ export function Settings() {
     }
   };
 
+  const [lastBackupResult, setLastBackupResult] = useState<{
+    totalScanned: number;
+    backedUp: number;
+    failedCount: number;
+    failedDocuments: Array<{ id: string; name: string; category: string; reason: string }>;
+  } | null>(null);
+  const [retryingDocId, setRetryingDocId] = useState<string | null>(null);
+
+  const handleRetrySingle = async (docId: string) => {
+    setRetryingDocId(docId);
+    toast.info('Retrying Backup', 'Attempting to back up failed document to Google Drive...');
+    try {
+      const res = await fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: docId, mode: 'single' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success('Backup Successful', 'Document successfully backed up to Google Drive.');
+        if (lastBackupResult) {
+          const remainingFailed = lastBackupResult.failedDocuments.filter((d) => d.id !== docId);
+          setLastBackupResult({
+            ...lastBackupResult,
+            backedUp: lastBackupResult.backedUp + 1,
+            failedCount: remainingFailed.length,
+            failedDocuments: remainingFailed,
+          });
+        }
+        await fetchGdriveStatus();
+      } else {
+        toast.error('Retry Failed', data.error || 'Could not back up document.');
+      }
+    } catch (err: any) {
+      toast.error('Retry Error', err.message);
+    } finally {
+      setRetryingDocId(null);
+    }
+  };
+
   const handleTriggerManualBackup = async () => {
     setIsBackingUp(true);
     try {
@@ -129,15 +169,27 @@ export function Settings() {
       const data = await res.json().catch(() => ({ success: false, error: 'Server returned non-JSON response' }));
 
       if (res.ok && data.success) {
-        if (data.failedCount === 0) {
+        const totalScanned = data.totalScanned ?? 0;
+        const backedUp = (data.alreadyBackedUp ?? 0) + (data.newlyBackedUp ?? 0);
+        const failedCount = data.failedCount ?? 0;
+        const failedDocuments = data.failedDocuments ?? [];
+
+        setLastBackupResult({
+          totalScanned,
+          backedUp,
+          failedCount,
+          failedDocuments,
+        });
+
+        if (failedCount === 0) {
           toast.success(
             'DR Backup Complete',
-            `${data.totalScanned} documents scanned • ${data.alreadyBackedUp} already backed up • ${data.newlyBackedUp} newly backed up`
+            `${totalScanned} scanned | ${backedUp} backed up | 0 failed`
           );
         } else {
           toast.warning(
-            'DR Backup Completed With Errors',
-            `${data.totalScanned} scanned • ${data.newlyBackedUp} backed up • ${data.failedCount} failed (${data.failedDocuments?.slice(0, 2).join(', ')})`
+            'DR Backup Completed With Warnings',
+            `${totalScanned} scanned | ${backedUp} backed up | ${failedCount} failed`
           );
         }
         await fetchGdriveStatus();
@@ -271,6 +323,61 @@ export function Settings() {
               </div>
             </div>
           </div>
+
+          {/* Detailed DR Backup Result Banner */}
+          {lastBackupResult && (
+            <div className={`p-4 rounded-xl border text-xs space-y-2 ${
+              lastBackupResult.failedCount === 0
+                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                : 'bg-amber-50/80 border-amber-200 text-amber-900'
+            }`}>
+              <div className="flex items-center justify-between font-bold">
+                <div className="flex items-center gap-2">
+                  {lastBackupResult.failedCount === 0 ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-amber-600" />
+                  )}
+                  <span>
+                    DR Backup Result: {lastBackupResult.totalScanned} scanned | {lastBackupResult.backedUp} backed up | {lastBackupResult.failedCount} failed
+                  </span>
+                </div>
+                {lastBackupResult.failedCount === 0 && (
+                  <span className="text-[11px] font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-full">
+                    100% Synced
+                  </span>
+                )}
+              </div>
+
+              {lastBackupResult.failedCount > 0 && lastBackupResult.failedDocuments.length > 0 && (
+                <div className="space-y-1.5 pt-1">
+                  <p className="text-[11px] font-semibold text-amber-800">Issues detected:</p>
+                  <div className="space-y-1">
+                    {lastBackupResult.failedDocuments.map((doc) => (
+                      <div
+                        key={doc.id}
+                        className="p-2 bg-white/90 rounded-lg border border-amber-200/70 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-[11px]"
+                      >
+                        <div className="min-w-0">
+                          <span className="font-bold text-gray-900">{doc.name}</span>{' '}
+                          <span className="text-gray-500">({doc.category})</span>: <span className="text-red-600 font-medium">{doc.reason}</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => handleRetrySingle(doc.id)}
+                          disabled={retryingDocId === doc.id}
+                          className="self-start sm:self-auto inline-flex items-center gap-1 px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-[#1677FF] border border-blue-200 rounded font-semibold text-[10px] cursor-pointer transition-colors"
+                        >
+                          <RefreshCw className={`w-2.5 h-2.5 ${retryingDocId === doc.id ? 'animate-spin' : ''}`} />
+                          Retry
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Action Buttons */}
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
