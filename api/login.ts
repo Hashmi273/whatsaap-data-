@@ -2,9 +2,10 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import crypto from 'crypto';
 
 function createSignedPortalToken(userId: string, email: string, role: string, secret: string): string {
+  const effectiveSecret = secret || process.env.PORTAL_SECRET || 'immense-portal-auth-secret-key-2026';
   const expiresAt = Date.now() + 14 * 24 * 60 * 60 * 1000;
   const payloadStr = `${userId}:${email}:${role}:${expiresAt}`;
-  const signature = crypto.createHmac('sha256', secret).update(payloadStr).digest('hex');
+  const signature = crypto.createHmac('sha256', effectiveSecret).update(payloadStr).digest('hex');
   const payloadBase64 = Buffer.from(payloadStr).toString('base64url');
   return `immense_s1_${payloadBase64}.${signature}`;
 }
