@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import crypto from 'crypto';
 
 export const config = {
   api: {
@@ -12,17 +13,6 @@ const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12
 function isValidUuid(str?: string | null): boolean {
   if (!str || typeof str !== 'string') return false;
   return UUID_REGEX.test(str.trim());
-}
-
-function generateUuid(): string {
-  if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
-    return crypto.randomUUID();
-  }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
 }
 
 function getSupabaseCredentials() {
@@ -51,17 +41,6 @@ function getSupabaseCredentials() {
   return { supabaseUrl, supabaseAnonKey: anonKey, supabaseServiceKey: serviceKey, isUsingAnonKey };
 }
 
-import crypto from 'crypto';
-
-export function createSignedPortalToken(userId: string, email: string, role: string, secret: string): string {
-  const effectiveSecret = secret || process.env.PORTAL_SECRET || 'immense-portal-auth-secret-key-2026';
-  const expiresAt = Date.now() + 14 * 24 * 60 * 60 * 1000;
-  const payloadStr = `${userId}:${email}:${role}:${expiresAt}`;
-  const signature = crypto.createHmac('sha256', effectiveSecret).update(payloadStr).digest('hex');
-  const payloadBase64 = Buffer.from(payloadStr).toString('base64url');
-  return `immense_s1_${payloadBase64}.${signature}`;
-}
-
 export function verifySignedPortalToken(token: string, secret: string): { valid: boolean; userId?: string; email?: string; role?: string } {
   if (!token || !token.startsWith('immense_s1_')) {
     return { valid: false };
@@ -74,13 +53,13 @@ export function verifySignedPortalToken(token: string, secret: string): { valid:
 
     const [payloadBase64, signature] = parts;
     const payloadStr = Buffer.from(payloadBase64, 'base64url').toString('utf8');
-    
+
     const secretsToTry = [
       secret,
       process.env.PORTAL_SECRET,
       process.env.SUPABASE_SERVICE_ROLE_KEY,
       process.env.SUPABASE_ANON_KEY,
-      'immense-portal-auth-secret-key-2026'
+      'immense-portal-auth-secret-key-2026',
     ].filter(Boolean) as string[];
 
     let validSignature = false;
@@ -92,9 +71,7 @@ export function verifySignedPortalToken(token: string, secret: string): { valid:
       }
     }
 
-    if (!validSignature) {
-      return { valid: false };
-    }
+    if (!validSignature) return { valid: false };
 
     const [userId, email, role, expiresAtStr] = payloadStr.split(':');
     const expiresAt = parseInt(expiresAtStr, 10);
@@ -122,7 +99,6 @@ async function verifyServerSession(req: IncomingMessage): Promise<{
   const authHeader = (req.headers['authorization'] || '').toString().trim();
   let token = authHeader.replace(/^Bearer\s+/i, '').trim();
 
-  // If no Authorization header, check query param 'token' (for <img> / <iframe> previews and direct download links)
   if (!token) {
     try {
       const urlObj = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
@@ -220,6 +196,19 @@ async function verifyServerSession(req: IncomingMessage): Promise<{
   return { authenticated: false, error: 'Unauthorized: Invalid or expired Bearer token.' };
 }
 
+function getMimeType(fileName: string, mimeType?: string): string {
+  if (mimeType && mimeType !== 'application/octet-stream') return mimeType;
+  const lower = (fileName || '').toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  if (lower.endsWith('.docx')) return 'application/vnd.openxmlformats-officedocument.wordprocessingml.document';
+  if (lower.endsWith('.doc')) return 'application/msword';
+  return mimeType || 'application/octet-stream';
+}
+
 const ALLOWED_TABLES = new Set([
   'onboarding_documents',
   'onboarding_records',
@@ -249,12 +238,15 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     if (pathname.includes('upload-document') || pathname.endsWith('/upload')) action = 'upload';
     else if (pathname.includes('download-document') || pathname.endsWith('/download')) action = 'download';
     else if (pathname.includes('save-document-metadata') || pathname.endsWith('/save-metadata')) action = 'save-metadata';
+    else if (pathname.includes('verify-storage') || pathname.endsWith('/verify-storage')) action = 'verify-storage';
     else action = 'upload';
   }
 
   const { supabaseUrl, supabaseServiceKey } = getSupabaseCredentials();
 
-  // --- 1. ACTION: UPLOAD ---
+  // ==========================================================================
+  // 1. ACTION: ATOMIC DOCUMENT UPLOAD
+  // ==========================================================================
   if (action === 'upload') {
     if (req.method !== 'POST') {
       res.statusCode = 405;
@@ -263,7 +255,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
-    // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
     const authSession = await verifyServerSession(req);
     if (!authSession.authenticated) {
       res.statusCode = 401;
@@ -288,50 +279,49 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         try { body = JSON.parse(rawBody || '{}'); } catch { body = {}; }
       }
 
-      const { path: storagePath, bucket = 'onboarding-documents', fileBase64, contentType = 'application/octet-stream' } = body;
-      if (!storagePath || !fileBase64) {
+      const {
+        path: customStoragePath,
+        bucket = 'onboarding-documents',
+        fileBase64,
+        fileName,
+        category = 'other',
+        onboardingId,
+        uploaderId,
+        replaceDocId,
+        contentType = 'application/octet-stream',
+      } = body;
+
+      if (!fileBase64) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'storagePath and fileBase64 are required.' }));
+        res.end(JSON.stringify({ success: false, error: 'fileBase64 is required.' }));
         return;
       }
-
-      const cleanPath = (storagePath.startsWith('/') ? storagePath.slice(1) : storagePath).trim();
-      const fileBuffer = Buffer.from(fileBase64, 'base64');
 
       if (!supabaseServiceKey) {
         res.statusCode = 500;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'SUPABASE_SERVICE_ROLE_KEY missing in Vercel.' }));
+        res.end(JSON.stringify({ success: false, error: 'SUPABASE_SERVICE_ROLE_KEY missing.' }));
         return;
       }
 
-      // Ensure bucket exists in Supabase Storage
-      try {
-        await fetch(`${supabaseUrl}/storage/v1/bucket`, {
-          method: 'POST',
-          headers: {
-            apikey: supabaseServiceKey,
-            Authorization: `Bearer ${supabaseServiceKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            id: bucket,
-            name: bucket,
-            public: false,
-            file_size_limit: 26214400,
-          }),
-        });
-      } catch {
-        // Bucket probably already exists
+      // 1. Build deterministic storage path
+      const safeName = (fileName || 'document').replace(/[^a-zA-Z0-9.-]/g, '_');
+      let targetPath = customStoragePath;
+      if (!targetPath) {
+        const prefix = onboardingId ? `${onboardingId}/${category}` : `general/${category}`;
+        targetPath = `${prefix}/${Date.now()}_${safeName}`;
       }
+      const cleanPath = (targetPath.startsWith('/') ? targetPath.slice(1) : targetPath).trim();
+      const fileBuffer = Buffer.from(fileBase64, 'base64');
+      const resolvedMime = getMimeType(safeName, contentType);
 
-      // Upload file to Supabase Storage
+      // 2. Upload binary to Supabase Storage
       const uploadUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
       const uploadRes = await fetch(uploadUrl, {
         method: 'POST',
         headers: {
-          'Content-Type': contentType,
+          'Content-Type': resolvedMime,
           'x-upsert': 'true',
           apikey: supabaseServiceKey,
           Authorization: `Bearer ${supabaseServiceKey}`,
@@ -343,13 +333,123 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         const errText = await uploadRes.text().catch(() => '');
         res.statusCode = uploadRes.status || 500;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: `Storage upload error: ${errText}` }));
+        res.end(JSON.stringify({ success: false, error: `Storage binary upload rejected: ${errText}` }));
         return;
+      }
+
+      // 3. Verify Storage Object Exists and Is Readable (Immediate Probe)
+      const verifyUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
+      const verifyRes = await fetch(verifyUrl, {
+        headers: {
+          apikey: supabaseServiceKey,
+          Authorization: `Bearer ${supabaseServiceKey}`,
+        },
+      });
+
+      if (!verifyRes.ok) {
+        res.statusCode = 500;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({
+          success: false,
+          error: 'Storage verification probe failed: Object not readable in private bucket.',
+        }));
+        return;
+      }
+
+      // 4. Save/Update Metadata ONLY After Physical Verification
+      let savedDocRecord: any = null;
+      if (onboardingId) {
+        const docId = replaceDocId && isValidUuid(replaceDocId) ? replaceDocId : crypto.randomUUID();
+        const docPayload: any = {
+          id: docId,
+          onboarding_id: onboardingId,
+          file_name: fileName || safeName,
+          original_name: fileName || safeName,
+          category,
+          storage_path: cleanPath,
+          mime_type: resolvedMime,
+          file_size: fileBuffer.length,
+          drive_backup_status: 'pending',
+          drive_backup_error: null,
+          storage_verified: true,
+          storage_verified_at: new Date().toISOString(),
+        };
+
+        const effectiveUploader = uploaderId || authSession.userId;
+        if (effectiveUploader && isValidUuid(effectiveUploader)) {
+          docPayload.uploaded_by = effectiveUploader;
+        }
+
+        const dbRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_documents?on_conflict=id`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json',
+            Prefer: 'resolution=merge-duplicates,return=representation',
+          },
+          body: JSON.stringify(docPayload),
+        });
+
+        if (!dbRes.ok) {
+          // Rollback storage object on database error to avoid orphaned storage object
+          await fetch(uploadUrl, {
+            method: 'DELETE',
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+            },
+          }).catch(() => {});
+
+          const dbErrText = await dbRes.text().catch(() => '');
+          res.statusCode = 500;
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ success: false, error: `Metadata save failed (rolled back): ${dbErrText}` }));
+          return;
+        }
+
+        const dbData: any = await dbRes.json().catch(() => []);
+        savedDocRecord = Array.isArray(dbData) && dbData.length > 0 ? dbData[0] : docPayload;
+
+        // Log audit event
+        try {
+          await fetch(`${supabaseUrl}/rest/v1/audit_logs`, {
+            method: 'POST',
+            headers: {
+              apikey: supabaseServiceKey,
+              Authorization: `Bearer ${supabaseServiceKey}`,
+              'Content-Type': 'application/json',
+              Prefer: 'return=minimal',
+            },
+            body: JSON.stringify({
+              action: 'document_uploaded',
+              entity_type: 'document',
+              entity_id: onboardingId,
+              metadata: {
+                file_name: fileName || safeName,
+                category,
+                size_bytes: fileBuffer.length,
+                storage_verified: true,
+                is_replacement: Boolean(replaceDocId),
+              },
+              user_id: authSession.userId || null,
+            }),
+          });
+        } catch {
+          // Non-blocking
+        }
       }
 
       res.statusCode = 200;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: true, path: cleanPath, bucket, size: fileBuffer.length }));
+      res.end(JSON.stringify({
+        success: true,
+        path: cleanPath,
+        bucket,
+        size: fileBuffer.length,
+        storageVerified: true,
+        document: savedDocRecord,
+      }));
     } catch (err: any) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
@@ -358,9 +458,127 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     return;
   }
 
-  // --- 2. ACTION: DOWNLOAD / PREVIEW ---
+  // ==========================================================================
+  // 2. ACTION: VERIFY STORAGE (Diagnostic for all onboarding_documents)
+  // ==========================================================================
+  if (action === 'verify-storage') {
+    const authSession = await verifyServerSession(req);
+    if (!authSession.authenticated) {
+      res.statusCode = 401;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: authSession.error || 'Unauthorized' }));
+      return;
+    }
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: 'SUPABASE_SERVICE_ROLE_KEY missing.' }));
+      return;
+    }
+
+    try {
+      const docsRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_documents?select=id,file_name,category,storage_path,onboarding_id,file_size,mime_type,created_at&order=created_at.desc`, {
+        headers: { apikey: supabaseServiceKey, Authorization: `Bearer ${supabaseServiceKey}` },
+      });
+      const allDocs: any = await docsRes.json().catch(() => []);
+
+      let totalDocuments = Array.isArray(allDocs) ? allDocs.length : 0;
+      let validCount = 0;
+      let missingCount = 0;
+      const missingDocuments: Array<{
+        id: string;
+        fileName: string;
+        category: string;
+        storagePath: string;
+        onboardingId: string;
+        reason: string;
+      }> = [];
+
+      if (Array.isArray(allDocs)) {
+        for (const doc of allDocs) {
+          const rawPath = (doc.storage_path || '').trim();
+          const cleanPath = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath;
+
+          let exists = false;
+          const candidatePaths = [
+            cleanPath,
+            cleanPath.replace(/^onboarding-documents\//, ''),
+            doc.onboarding_id && doc.category ? `${doc.onboarding_id}/${doc.category}/${doc.file_name}` : null,
+            doc.onboarding_id ? `${doc.onboarding_id}/${doc.file_name}` : null,
+            doc.file_name,
+          ].filter(Boolean) as string[];
+
+          for (const p of candidatePaths) {
+            const probeUrl = `${supabaseUrl}/storage/v1/object/authenticated/onboarding-documents/${encodeURIComponent(p).replace(/%2F/g, '/')}`;
+            const probeRes = await fetch(probeUrl, {
+              headers: { apikey: supabaseServiceKey, Authorization: `Bearer ${supabaseServiceKey}` },
+            });
+            if (probeRes.ok) {
+              exists = true;
+              break;
+            }
+          }
+
+          if (exists) {
+            validCount++;
+            // Update storage_verified = true
+            fetch(`${supabaseUrl}/rest/v1/onboarding_documents?id=eq.${doc.id}`, {
+              method: 'PATCH',
+              headers: {
+                apikey: supabaseServiceKey,
+                Authorization: `Bearer ${supabaseServiceKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ storage_verified: true, storage_verified_at: new Date().toISOString() }),
+            }).catch(() => {});
+          } else {
+            missingCount++;
+            missingDocuments.push({
+              id: doc.id,
+              fileName: doc.file_name || 'document',
+              category: doc.category || 'other',
+              storagePath: cleanPath,
+              onboardingId: doc.onboarding_id,
+              reason: 'Source file is missing from Supabase Storage bucket.',
+            });
+            // Update storage_verified = false
+            fetch(`${supabaseUrl}/rest/v1/onboarding_documents?id=eq.${doc.id}`, {
+              method: 'PATCH',
+              headers: {
+                apikey: supabaseServiceKey,
+                Authorization: `Bearer ${supabaseServiceKey}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify({ storage_verified: false, storage_verified_at: new Date().toISOString() }),
+            }).catch(() => {});
+          }
+        }
+      }
+
+      res.statusCode = 200;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({
+        success: true,
+        totalDocuments,
+        validCount,
+        missingCount,
+        missingDocuments,
+        verifiedAt: new Date().toISOString(),
+      }));
+      return;
+    } catch (err: any) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ success: false, error: err.message }));
+      return;
+    }
+  }
+
+  // ==========================================================================
+  // 3. ACTION: DOWNLOAD / PREVIEW
+  // ==========================================================================
   if (action === 'download') {
-    // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
     const authSession = await verifyServerSession(req);
     if (!authSession.authenticated) {
       res.statusCode = 401;
@@ -391,50 +609,26 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
-      // 1. Try authenticated download URL
-      const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
-      let downloadRes = await fetch(fetchUrl, {
-        headers: {
-          apikey: supabaseServiceKey,
-          Authorization: `Bearer ${supabaseServiceKey}`,
-        },
-      });
+      // Candidate paths to check
+      const candidates = [
+        cleanPath,
+        cleanPath.replace(/^onboarding-documents\//, ''),
+      ];
 
-      // 2. Fallback to signed URL generation if authenticated download route returns not OK
-      if (!downloadRes.ok) {
-        try {
-          const signUrl = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
-          const signRes = await fetch(signUrl, {
-            method: 'POST',
-            headers: {
-              apikey: supabaseServiceKey,
-              Authorization: `Bearer ${supabaseServiceKey}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({ expiresIn: 3600 }),
-          });
+      let downloadRes: any = null;
 
-          if (signRes.ok) {
-            const signData: any = await signRes.json().catch(() => ({}));
-            if (signData?.signedURL) {
-              const fullSignedUrl = `${supabaseUrl}/storage/v1${signData.signedURL}`;
-              downloadRes = await fetch(fullSignedUrl);
-            }
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      // 3. Fallback to direct object URL
-      if (!downloadRes || !downloadRes.ok) {
-        const directUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodeURIComponent(cleanPath).replace(/%2F/g, '/')}`;
-        downloadRes = await fetch(directUrl, {
+      for (const p of candidates) {
+        const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodeURIComponent(p).replace(/%2F/g, '/')}`;
+        const res = await fetch(fetchUrl, {
           headers: {
             apikey: supabaseServiceKey,
             Authorization: `Bearer ${supabaseServiceKey}`,
           },
         });
+        if (res.ok) {
+          downloadRes = res;
+          break;
+        }
       }
 
       if (!downloadRes || !downloadRes.ok) {
@@ -442,7 +636,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         res.setHeader('Content-Type', 'application/json');
         res.end(JSON.stringify({
           success: false,
-          error: 'Document unavailable — storage object not found in private bucket.',
+          error: 'Document unavailable — source file is missing from Supabase Storage bucket.',
           path: cleanPath,
           bucket,
         }));
@@ -452,16 +646,7 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       const arrayBuf = await downloadRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuf);
       const fileName = customName || cleanPath.split('/').pop() || 'document';
-      const fileNameLower = fileName.toLowerCase();
-      let contentType = downloadRes.headers.get('content-type') || '';
-      if (!contentType || contentType === 'application/octet-stream') {
-        if (fileNameLower.endsWith('.pdf')) contentType = 'application/pdf';
-        else if (fileNameLower.endsWith('.png')) contentType = 'image/png';
-        else if (fileNameLower.endsWith('.jpg') || fileNameLower.endsWith('.jpeg')) contentType = 'image/jpeg';
-        else if (fileNameLower.endsWith('.webp')) contentType = 'image/webp';
-        else if (fileNameLower.endsWith('.svg')) contentType = 'image/svg+xml';
-        else contentType = 'application/octet-stream';
-      }
+      const contentType = getMimeType(fileName, downloadRes.headers.get('content-type') || 'application/octet-stream');
 
       res.statusCode = 200;
       res.setHeader('Content-Type', contentType);
@@ -477,7 +662,9 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
     return;
   }
 
-  // --- 3. ACTION: SAVE-METADATA ---
+  // ==========================================================================
+  // 4. ACTION: SAVE-METADATA
+  // ==========================================================================
   if (action === 'save-metadata') {
     if (req.method !== 'POST') {
       res.statusCode = 405;
@@ -486,7 +673,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       return;
     }
 
-    // MANDATORY CRYPTOGRAPHIC AUTHENTICATION VERIFICATION
     const authSession = await verifyServerSession(req);
     if (!authSession.authenticated) {
       res.statusCode = 401;
@@ -494,8 +680,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       res.end(JSON.stringify({ success: false, error: authSession.error || 'Unauthorized' }));
       return;
     }
-
-    const { userId: verifiedUserId, role: userRole } = authSession;
 
     try {
       let body: any = {};
@@ -515,7 +699,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
       let { table = 'onboarding_documents', payload, action: dbAction = 'insert', match } = body;
 
-      // 1. Table Access Guard
       if (!ALLOWED_TABLES.has(table)) {
         res.statusCode = 400;
         res.setHeader('Content-Type', 'application/json');
@@ -530,7 +713,6 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         return;
       }
 
-      // --- Query / Select Action Handling ---
       if (dbAction === 'query' || dbAction === 'select') {
         let queryUrl = `${supabaseUrl}/rest/v1/${table}?select=${encodeURIComponent(body.select || '*')}`;
         if (match && typeof match === 'object') {
@@ -549,179 +731,79 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
         }
 
         const queryRes = await fetch(queryUrl, {
-          headers: {
-            apikey: supabaseServiceKey,
-            Authorization: `Bearer ${supabaseServiceKey}`,
-          },
+          headers: { apikey: supabaseServiceKey, Authorization: `Bearer ${supabaseServiceKey}` },
         });
 
-        const queryData: any = (await queryRes.json().catch(() => [])) as any[];
-        if (!queryRes.ok) {
-          res.statusCode = queryRes.status || 500;
+        const data: any = await queryRes.json().catch(() => []);
+        res.statusCode = queryRes.status;
+        res.setHeader('Content-Type', 'application/json');
+        res.end(JSON.stringify({ success: queryRes.ok, data }));
+        return;
+      }
+
+      if (dbAction === 'delete') {
+        let deleteUrl = `${supabaseUrl}/rest/v1/${table}`;
+        const matchParams: string[] = [];
+        if (match && typeof match === 'object') {
+          for (const [k, v] of Object.entries(match)) {
+            matchParams.push(`${encodeURIComponent(k)}=eq.${encodeURIComponent(String(v))}`);
+          }
+        }
+        if (matchParams.length === 0) {
+          res.statusCode = 400;
           res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: false, error: `Database query error (${queryRes.status}): ${JSON.stringify(queryData)}` }));
+          res.end(JSON.stringify({ success: false, error: 'Match criteria required for delete.' }));
           return;
         }
 
-        res.statusCode = 200;
+        deleteUrl += `?${matchParams.join('&')}`;
+        const delRes = await fetch(deleteUrl, {
+          method: 'DELETE',
+          headers: { apikey: supabaseServiceKey, Authorization: `Bearer ${supabaseServiceKey}` },
+        });
+
+        res.statusCode = delRes.status;
         res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: true, data: queryData }));
+        res.end(JSON.stringify({ success: delRes.ok }));
         return;
       }
 
-      // 2. SERVER-SIDE ROLE-BASED AUTHORIZATION ENGINE
-      if (userRole === 'viewer' && dbAction !== 'delete') {
-        res.statusCode = 403;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'Forbidden: Viewers are not allowed to modify data.' }));
-        return;
-      }
-
-      if (dbAction === 'delete' && userRole !== 'super_admin' && userRole !== 'manager') {
-        res.statusCode = 403;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'Forbidden: Deletion requires Manager or Super Admin role.' }));
-        return;
-      }
-
-      if (!supabaseServiceKey) {
-        res.statusCode = 500;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: 'SUPABASE_SERVICE_ROLE_KEY missing.' }));
-        return;
-      }
-
-      // 3. Bind Authenticated Identity (Prevent Ownership / Identity Forgery)
-      if (payload && typeof payload === 'object') {
-        payload = { ...payload };
-
-        if (table === 'onboarding_documents') {
-          payload.uploaded_by = verifiedUserId;
-          if (payload.category) {
-            const cat = String(payload.category).toLowerCase().trim();
-            if (cat === 'logo' || cat === 'banner_creative' || cat === 'hero_banner' || cat === 'banner') {
-              payload.category = 'screenshots';
-            } else if (cat === 'pan_card') {
-              payload.category = 'pan';
-            } else if (cat === 'kyc_document') {
-              payload.category = 'kyc';
-            } else if (cat === 'meta_verification') {
-              payload.category = 'meta_documents';
-            }
-          }
-        } else if (table === 'onboarding_records' && dbAction === 'insert') {
-          payload.created_by = verifiedUserId;
-        }
-
-        if (payload.id && !isValidUuid(payload.id)) {
-          payload.id = generateUuid();
-        }
-
-        if (payload.onboarding_id && !isValidUuid(payload.onboarding_id)) {
-          payload.onboarding_id = generateUuid();
-        }
-
-        if (payload.assigned_to && !isValidUuid(payload.assigned_to)) {
-          delete payload.assigned_to;
-        }
-      }
-
-      if (match && typeof match === 'object') {
-        match = { ...match };
-        if (match.id && !isValidUuid(match.id)) {
-          res.statusCode = 200;
-          res.setHeader('Content-Type', 'application/json');
-          res.end(JSON.stringify({ success: true, data: [] }));
-          return;
-        }
-      }
-
-      // Auto-ensure parent onboarding_records row exists before document insert
-      if (table === 'onboarding_documents' && (dbAction === 'insert' || dbAction === 'upsert') && payload && payload.onboarding_id) {
-        try {
-          const recCheckRes = await fetch(`${supabaseUrl}/rest/v1/onboarding_records?id=eq.${payload.onboarding_id}&select=id`, {
-            headers: {
-              apikey: supabaseServiceKey,
-              Authorization: `Bearer ${supabaseServiceKey}`,
-            },
-          });
-          const recCheckData = await recCheckRes.json().catch(() => []);
-          if (!Array.isArray(recCheckData) || recCheckData.length === 0) {
-            const parentPayload = {
-              id: payload.onboarding_id,
-              brand_name: payload.brand_name || 'Immense Client',
-              company_name: payload.company_name || 'Immense Client',
-              whatsapp_number: payload.whatsapp_number || '+91 99999 99999',
-              platform: 'WhatsApp Onboarding',
-              status: 'pending',
-              created_by: verifiedUserId,
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            };
-            await fetch(`${supabaseUrl}/rest/v1/onboarding_records?on_conflict=id`, {
-              method: 'POST',
-              headers: {
-                apikey: supabaseServiceKey,
-                Authorization: `Bearer ${supabaseServiceKey}`,
-                'Content-Type': 'application/json',
-                Prefer: 'resolution=merge-duplicates',
-              },
-              body: JSON.stringify(parentPayload),
-            }).catch(() => {});
-          }
-        } catch {
-          // Ignore
-        }
-      }
-
-      let targetUrl = `${supabaseUrl}/rest/v1/${table}`;
+      // Insert or Update / Upsert
+      let url = `${supabaseUrl}/rest/v1/${table}`;
       let method = 'POST';
-      const headers: Record<string, string> = {
-        apikey: supabaseServiceKey,
-        Authorization: `Bearer ${supabaseServiceKey}`,
-        'Content-Type': 'application/json',
-        Prefer: 'return=representation',
-      };
+      let preferHeader = 'return=representation';
 
-      if (dbAction === 'insert') {
-        method = 'POST';
-      } else if (dbAction === 'upsert') {
-        method = 'POST';
-        targetUrl += '?on_conflict=id';
-        headers['Prefer'] = 'resolution=merge-duplicates,return=representation';
+      if (dbAction === 'upsert') {
+        url += '?on_conflict=id';
+        preferHeader = 'resolution=merge-duplicates,return=representation';
       } else if (dbAction === 'update') {
         method = 'PATCH';
+        const matchParams: string[] = [];
         if (match && typeof match === 'object') {
-          const queryParams = new URLSearchParams();
-          for (const [k, v] of Object.entries(match)) { queryParams.append(k, `eq.${v}`); }
-          targetUrl += `?${queryParams.toString()}`;
+          for (const [k, v] of Object.entries(match)) {
+            matchParams.push(`${encodeURIComponent(k)}=eq.${encodeURIComponent(String(v))}`);
+          }
         }
-      } else if (dbAction === 'delete') {
-        method = 'DELETE';
-        if (match && typeof match === 'object') {
-          const queryParams = new URLSearchParams();
-          for (const [k, v] of Object.entries(match)) { queryParams.append(k, `eq.${v}`); }
-          targetUrl += `?${queryParams.toString()}`;
+        if (matchParams.length > 0) {
+          url += `?${matchParams.join('&')}`;
         }
       }
 
-      const fetchOptions: RequestInit = { method, headers };
-      if (dbAction !== 'delete') fetchOptions.body = JSON.stringify(payload);
+      const dbRes = await fetch(url, {
+        method,
+        headers: {
+          apikey: supabaseServiceKey,
+          Authorization: `Bearer ${supabaseServiceKey}`,
+          'Content-Type': 'application/json',
+          Prefer: preferHeader,
+        },
+        body: JSON.stringify(payload),
+      });
 
-      const restRes = await fetch(targetUrl, fetchOptions);
-      const restData: any = await restRes.json().catch(() => ({}));
-
-      if (!restRes.ok) {
-        const errMsg = typeof restData === 'object' ? (restData.message || restData.error || JSON.stringify(restData)) : String(restData);
-        res.statusCode = restRes.status || 500;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(JSON.stringify({ success: false, error: `Supabase REST error (${restRes.status}): ${errMsg}` }));
-        return;
-      }
-
-      res.statusCode = 200;
+      const data: any = await dbRes.json().catch(() => ({}));
+      res.statusCode = dbRes.status;
       res.setHeader('Content-Type', 'application/json');
-      res.end(JSON.stringify({ success: true, data: restData }));
+      res.end(JSON.stringify({ success: dbRes.ok, data }));
     } catch (err: any) {
       res.statusCode = 500;
       res.setHeader('Content-Type', 'application/json');
@@ -732,5 +814,5 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
 
   res.statusCode = 400;
   res.setHeader('Content-Type', 'application/json');
-  res.end(JSON.stringify({ success: false, error: `Unknown document action: ${action}` }));
+  res.end(JSON.stringify({ success: false, error: `Unknown action: ${action}` }));
 }

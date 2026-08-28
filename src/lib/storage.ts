@@ -84,8 +84,98 @@ export async function getAuthBearerToken(): Promise<string> {
 }
 
 /**
- * Uploads a document to Supabase Storage private bucket 'onboarding-documents'.
- * Attempts client upload first, then serverless API fallback with Service Role key and auto-retry.
+ * ATOMIC Document Upload:
+ * 1. Uploads binary to private Supabase Storage bucket 'onboarding-documents'
+ * 2. Immediately verifies binary is readable in storage
+ * 3. Saves metadata in onboarding_documents ONLY after verification succeeds
+ * 4. Rolls back storage object if database insert fails
+ */
+export async function atomicUploadDocument(params: {
+  file: File;
+  fileName?: string;
+  category: string;
+  onboardingId?: string;
+  uploaderId?: string | null;
+  replaceDocId?: string | null;
+  bucket?: string;
+}): Promise<{
+  success: boolean;
+  document?: any;
+  storageVerified?: boolean;
+  storagePath?: string;
+  error?: string;
+}> {
+  const { file, fileName, category, onboardingId, uploaderId, replaceDocId, bucket = 'onboarding-documents' } = params;
+
+  try {
+    const reader = new FileReader();
+    const base64Promise = new Promise<string>((resolve, reject) => {
+      reader.onload = () => {
+        const result = reader.result as string;
+        const base64 = result.includes(',') ? result.split(',')[1] : result;
+        resolve(base64);
+      };
+      reader.onerror = reject;
+    });
+    reader.readAsDataURL(file);
+    const fileBase64 = await base64Promise;
+
+    let token = await getAuthBearerToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    const payload = {
+      fileBase64,
+      fileName: fileName || file.name,
+      category,
+      onboardingId,
+      uploaderId,
+      replaceDocId,
+      bucket,
+      contentType: file.type || 'application/octet-stream',
+    };
+
+    let res = await fetch('/api/upload-document', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(payload),
+    });
+
+    // Auto-retry once on 401 Unauthorized
+    if (res.status === 401) {
+      localStorage.removeItem('immense_auth_session');
+      token = await getAuthBearerToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+        res = await fetch('/api/upload-document', {
+          method: 'POST',
+          headers,
+          body: JSON.stringify(payload),
+        });
+      }
+    }
+
+    const resData = await res.json().catch(() => ({}));
+    if (res.ok && resData.success) {
+      return {
+        success: true,
+        document: resData.document,
+        storageVerified: Boolean(resData.storageVerified),
+        storagePath: resData.path,
+      };
+    } else {
+      const errorMsg = resData.error || `Server upload rejected (HTTP ${res.status})`;
+      return { success: false, error: errorMsg };
+    }
+  } catch (err: any) {
+    return { success: false, error: err.message || 'Network error during atomic upload.' };
+  }
+}
+
+/**
+ * Legacy compatible upload to storage bucket
  */
 export async function uploadDocumentToStorage(
   storagePath: string,
@@ -163,18 +253,73 @@ export async function uploadDocumentToStorage(
       return { success: true };
     } else {
       const errorMsg = resData.error || `Server upload rejected (HTTP ${res.status})`;
-      console.error('Serverless upload returned error:', errorMsg);
       return { success: false, error: errorMsg };
     }
   } catch (serverErr: any) {
-    console.error('Serverless storage upload fallback error:', serverErr);
     return { success: false, error: serverErr.message || 'Network error during document upload.' };
   }
 }
 
 /**
+ * Diagnostic: Verifies physical existence of all onboarding_documents in Supabase Storage.
+ */
+export async function verifyVaultStorage(): Promise<{
+  success: boolean;
+  totalDocuments?: number;
+  validCount?: number;
+  missingCount?: number;
+  missingDocuments?: Array<{
+    id: string;
+    fileName: string;
+    category: string;
+    storagePath: string;
+    onboardingId: string;
+    reason: string;
+  }>;
+  error?: string;
+}> {
+  try {
+    let token = await getAuthBearerToken();
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (token) {
+      headers['Authorization'] = `Bearer ${token}`;
+    }
+
+    let res = await fetch('/api/document?action=verify-storage', {
+      method: 'GET',
+      headers,
+    });
+
+    if (res.status === 401) {
+      localStorage.removeItem('immense_auth_session');
+      token = await getAuthBearerToken();
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+        res = await fetch('/api/document?action=verify-storage', {
+          method: 'GET',
+          headers,
+        });
+      }
+    }
+
+    const resData = await res.json().catch(() => ({}));
+    if (res.ok && resData.success) {
+      return {
+        success: true,
+        totalDocuments: resData.totalDocuments,
+        validCount: resData.validCount,
+        missingCount: resData.missingCount,
+        missingDocuments: resData.missingDocuments || [],
+      };
+    }
+    return { success: false, error: resData.error || 'Verification failed.' };
+  } catch (err: any) {
+    return { success: false, error: err.message };
+  }
+}
+
+/**
  * Saves metadata to PostgreSQL tables (onboarding_documents, onboarding_records, etc.)
- * using serverless API route /api/save-document-metadata backed by Service Role key.
  */
 export async function saveDocumentMetadata(
   table: string,
@@ -184,7 +329,6 @@ export async function saveDocumentMetadata(
 ): Promise<{ success: boolean; data?: any; error?: string }> {
   try {
     let token = await getAuthBearerToken();
-
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -201,7 +345,6 @@ export async function saveDocumentMetadata(
       }),
     });
 
-    // Auto-retry once on 401 Unauthorized
     if (res.status === 401) {
       localStorage.removeItem('immense_auth_session');
       token = await getAuthBearerToken();
@@ -242,7 +385,6 @@ export async function fetchDocumentMetadata(
 ): Promise<{ success: boolean; data?: any[]; error?: string }> {
   try {
     let token = await getAuthBearerToken();
-
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
     if (token) {
       headers['Authorization'] = `Bearer ${token}`;
@@ -261,7 +403,6 @@ export async function fetchDocumentMetadata(
       }),
     });
 
-    // Auto-retry once on 401 Unauthorized
     if (res.status === 401) {
       localStorage.removeItem('immense_auth_session');
       token = await getAuthBearerToken();

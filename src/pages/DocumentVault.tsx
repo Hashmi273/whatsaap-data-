@@ -35,7 +35,7 @@ import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData
 import { isValidUuid, generateUuid } from '@/lib/constants';
 import { format } from 'date-fns';
 import { downloadDocument } from '@/lib/download';
-import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
+import { atomicUploadDocument, saveDocumentMetadata, fetchDocumentMetadata, verifyVaultStorage } from '@/lib/storage';
 
 export function DocumentVault() {
   const navigate = useNavigate();
@@ -50,10 +50,48 @@ export function DocumentVault() {
 
   // Upload Modal State
   const [uploadTargetRecord, setUploadTargetRecord] = useState<OnboardingRecord | null>(null);
+  const [replaceTargetDocId, setReplaceTargetDocId] = useState<string | null>(null);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploadCategory, setUploadCategory] = useState<DocumentCategory>('gst_certificate');
   const [isUploading, setIsUploading] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+
+  // Storage Verification Diagnostic State
+  const [isVerifyingStorage, setIsVerifyingStorage] = useState(false);
+  const [verifyResult, setVerifyResult] = useState<{
+    total: number;
+    valid: number;
+    missing: number;
+    missingDocs: any[];
+  } | null>(null);
+
+  const handleVerifyStorage = async () => {
+    setIsVerifyingStorage(true);
+    toast.info('Verifying Storage Vault', 'Scanning physical storage objects in Supabase...');
+    try {
+      const res = await verifyVaultStorage();
+      if (res.success) {
+        setVerifyResult({
+          total: res.totalDocuments || 0,
+          valid: res.validCount || 0,
+          missing: res.missingCount || 0,
+          missingDocs: res.missingDocuments || [],
+        });
+        if ((res.missingCount || 0) === 0) {
+          toast.success('Storage Verification Complete', `All ${res.totalDocuments} document binaries are verified in Supabase Vault.`);
+        } else {
+          toast.warning('Verification Notice', `${res.missingCount} legacy/test document binaries are missing from storage.`);
+        }
+        queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+      } else {
+        toast.error('Verification Error', res.error || 'Failed to verify storage vault.');
+      }
+    } catch (err: any) {
+      toast.error('Verification Error', err.message);
+    } finally {
+      setIsVerifyingStorage(false);
+    }
+  };
 
   // Fetch Onboarding Records and their associated vaulted documents
   const { data: recordsWithDocs, isLoading } = useQuery({
@@ -163,44 +201,24 @@ export function DocumentVault() {
     const recordId = uploadTargetRecord.id;
 
     try {
-      const sanitizedName = uploadFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
-      const storagePath = `${recordId}/${uploadCategory}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
 
-      // 1. Storage Upload (Client + Serverless fallback)
-      const uploadRes = await uploadDocumentToStorage(storagePath, uploadFile, 'onboarding-documents');
-      if (!uploadRes.success) {
-        setUploadError(uploadRes.error || 'Physical document could not be uploaded to private storage.');
-        setIsUploading(false);
-        return;
-      }
-
-      // 2. Metadata Insert ONLY after storage upload succeeds
-      const docId = crypto.randomUUID();
-      const docPayload: any = {
-        id: docId,
-        onboarding_id: recordId,
-        file_name: uploadFile.name,
-        original_name: uploadFile.name,
+      // 1. ATOMIC Storage Upload & Verification
+      const uploadRes = await atomicUploadDocument({
+        file: uploadFile,
         category: uploadCategory,
-        storage_path: storagePath,
-        mime_type: uploadFile.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
-        file_size: uploadFile.size,
-      };
+        onboardingId: recordId,
+        uploaderId,
+        replaceDocId: replaceTargetDocId,
+      });
 
-      if (uploaderId) {
-        docPayload.uploaded_by = uploaderId;
-      }
-
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
-      if (!saveRes.success) {
-        setUploadError(saveRes.error || 'Failed to save document metadata.');
+      if (!uploadRes.success) {
+        setUploadError(uploadRes.error || 'Physical document could not be uploaded and verified in storage.');
         setIsUploading(false);
         return;
       }
 
-      // 3. Persist into local vault caches
+      // 2. Persist into local vault caches
       let blobUrl = '';
       try {
         blobUrl = URL.createObjectURL(uploadFile);
@@ -208,11 +226,18 @@ export function DocumentVault() {
         // Ignore
       }
 
-      const newDocItem: any = {
+      const newDocItem: any = uploadRes.document || {
         id: generateUuid(),
-        ...docPayload,
+        onboarding_id: recordId,
+        file_name: uploadFile.name,
+        original_name: uploadFile.name,
+        category: uploadCategory,
+        storage_path: uploadRes.storagePath,
+        mime_type: uploadFile.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
+        file_size: uploadFile.size,
         created_at: new Date().toISOString(),
         localPreviewUrl: blobUrl,
+        storage_verified: true,
         uploader_profile: {
           id: profile?.id || 'immense-admin-001',
           full_name: profile?.full_name || 'Immense Super Admin',
@@ -380,17 +405,64 @@ export function DocumentVault() {
             </p>
           </div>
 
-          <div className="relative w-full sm:w-72">
-            <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Filter by brand, company or document..."
-              className="w-full pl-9 pr-4 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] shadow-2xs"
-            />
+          <div className="flex items-center gap-3">
+            <button
+              type="button"
+              onClick={handleVerifyStorage}
+              disabled={isVerifyingStorage}
+              className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-bold text-slate-800 bg-white hover:bg-gray-50 border border-gray-200 rounded-xl shadow-2xs transition-all cursor-pointer disabled:opacity-50"
+              title="Verify physical storage objects for all database document records"
+            >
+              <ShieldCheck className={`w-4 h-4 text-indigo-600 ${isVerifyingStorage ? 'animate-spin' : ''}`} />
+              {isVerifyingStorage ? 'Verifying Vault...' : 'Verify Storage'}
+            </button>
+
+            <div className="relative w-full sm:w-72">
+              <Search className="absolute left-3 top-2.5 w-4 h-4 text-gray-400" />
+              <input
+                type="text"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                placeholder="Filter by brand, company or document..."
+                className="w-full pl-9 pr-4 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] shadow-2xs"
+              />
+            </div>
           </div>
         </div>
+
+        {/* Storage Verification Banner */}
+        {verifyResult && (
+          <div className={`p-4 rounded-xl border text-xs space-y-2 ${
+            verifyResult.missing === 0
+              ? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+              : 'bg-amber-50/80 border-amber-200 text-amber-900'
+          }`}>
+            <div className="flex items-center justify-between font-bold">
+              <div className="flex items-center gap-2">
+                {verifyResult.missing === 0 ? (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                ) : (
+                  <AlertCircle className="w-4 h-4 text-amber-600" />
+                )}
+                <span>
+                  Storage Verification: {verifyResult.total} Total Documents | {verifyResult.valid} Valid Vault Binaries | {verifyResult.missing} Missing
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => setVerifyResult(null)}
+                className="text-gray-400 hover:text-gray-600 cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </div>
+            {verifyResult.missing > 0 && (
+              <p className="text-[11px] text-amber-800">
+                Notice: {verifyResult.missing} legacy or test documents have database metadata but their physical binary file was never uploaded. Click "Replace" on the respective document card below to re-upload.
+              </p>
+            )}
+          </div>
+        )}
 
         {/* Vault Brand Folders */}
         {isLoading ? (
@@ -431,6 +503,7 @@ export function DocumentVault() {
                     <button
                       onClick={() => {
                         setUploadTargetRecord(item);
+                        setReplaceTargetDocId(null);
                         setUploadFile(null);
                         setUploadError(null);
                       }}
@@ -440,7 +513,7 @@ export function DocumentVault() {
                     </button>
                     <button
                       onClick={() => navigate(`/onboarding/${item.id}`)}
-                      className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-[#1677FF] bg-blue-50 hover:bg-blue-100 rounded-xl transition-colors cursor-pointer"
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-[#1677FF] bg-blue-50 hover:bg-blue-100 rounded-xl transition-colors cursor-pointer"
                     >
                       Open Brand <ChevronRight className="w-3.5 h-3.5" />
                     </button>
@@ -462,9 +535,16 @@ export function DocumentVault() {
                         <div className="flex items-center gap-2.5 min-w-0 pr-2">
                           {getDocIcon(doc.mime_type, doc.file_name)}
                           <div className="min-w-0">
-                            <p className="text-xs font-semibold text-gray-900 truncate">
-                              {doc.file_name}
-                            </p>
+                            <div className="flex items-center gap-1.5">
+                              <p className="text-xs font-semibold text-gray-900 truncate" title={doc.file_name}>
+                                {doc.file_name}
+                              </p>
+                              {doc.storage_verified === false && (
+                                <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                  Missing
+                                </span>
+                              )}
+                            </div>
                             <div className="flex items-center gap-2 mt-0.5">
                               <span className="text-[10px] text-gray-500 font-medium">
                                 {formatCategoryLabel(doc.category)}
@@ -477,7 +557,7 @@ export function DocumentVault() {
                                 <button
                                   onClick={() => handleBackupSingle(doc)}
                                   disabled={backingUpDocId === doc.id}
-                                  className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-700 bg-red-50 hover:bg-red-100 px-1.5 py-0.2 rounded transition-colors"
+                                  className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-700 bg-red-50 hover:bg-red-100 px-1.5 py-0.2 rounded transition-colors cursor-pointer"
                                   title={doc.drive_backup_error || 'Retry DR Backup'}
                                 >
                                   <AlertCircle className="w-2.5 h-2.5 text-red-600" /> Retry
@@ -486,7 +566,7 @@ export function DocumentVault() {
                                 <button
                                   onClick={() => handleBackupSingle(doc)}
                                   disabled={backingUpDocId === doc.id}
-                                  className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 px-1.5 py-0.2 rounded transition-colors"
+                                  className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 px-1.5 py-0.2 rounded transition-colors cursor-pointer"
                                   title="Backup to Google Drive"
                                 >
                                   <UploadCloud className="w-2.5 h-2.5 text-amber-600" /> DR
@@ -497,30 +577,48 @@ export function DocumentVault() {
                         </div>
 
                         <div className="flex items-center gap-1 flex-shrink-0">
-                          {doc.drive_file_id && (
+                          {doc.storage_verified === false ? (
                             <button
-                              onClick={() => handleRestoreSingle(doc)}
-                              disabled={restoringDocId === doc.id}
-                              className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
-                              title="Restore binary from Google Drive DR"
+                              onClick={() => {
+                                setUploadTargetRecord(item);
+                                setReplaceTargetDocId(doc.id);
+                                setUploadCategory(doc.category || 'gst_certificate');
+                                setUploadFile(null);
+                                setUploadError(null);
+                              }}
+                              className="px-2 py-1 text-[10px] font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg cursor-pointer transition-colors"
+                              title="Upload physical binary for this record"
                             >
-                              <RotateCw className={`w-3.5 h-3.5 ${restoringDocId === doc.id ? 'animate-spin text-blue-600' : ''}`} />
+                              Replace
                             </button>
+                          ) : (
+                            <>
+                              {doc.drive_file_id && (
+                                <button
+                                  onClick={() => handleRestoreSingle(doc)}
+                                  disabled={restoringDocId === doc.id}
+                                  className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                                  title="Restore binary from Google Drive DR"
+                                >
+                                  <RotateCw className={`w-3.5 h-3.5 ${restoringDocId === doc.id ? 'animate-spin text-blue-600' : ''}`} />
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handlePreview(doc)}
+                                className="p-1.5 text-gray-400 hover:text-[#1677FF] hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                                title="Preview Document"
+                              >
+                                <Eye className="w-4 h-4" />
+                              </button>
+                              <button
+                                onClick={() => handleDownload(doc, item.id)}
+                                className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg cursor-pointer transition-colors"
+                                title="Download Original File"
+                              >
+                                <Download className="w-4 h-4" />
+                              </button>
+                            </>
                           )}
-                          <button
-                            onClick={() => handlePreview(doc)}
-                            className="p-1.5 text-gray-400 hover:text-[#1677FF] hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
-                            title="Preview Document"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDownload(doc, item.id)}
-                            className="p-1.5 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg cursor-pointer transition-colors"
-                            title="Download Original File"
-                          >
-                            <Download className="w-4 h-4" />
-                          </button>
                           <button
                             onClick={() => setDeleteDocTarget({ doc, recordId: item.id })}
                             className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer transition-colors"

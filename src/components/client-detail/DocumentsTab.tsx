@@ -5,7 +5,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/lib/toast';
-import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
+import { atomicUploadDocument, saveDocumentMetadata } from '@/lib/storage';
 import { downloadDocument, getDocumentPreviewUrl } from '@/lib/download';
 import { supabase } from '@/lib/supabase';
 import { isValidUuid } from '@/lib/constants';
@@ -58,47 +58,31 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
 
     setIsUploading(true);
     try {
-      const sanitizedName = selectedFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
-      const storagePath = `${recordId}/${uploadCategory}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
-      const docId = crypto.randomUUID();
 
-      const uploadResult = await uploadDocumentToStorage(storagePath, selectedFile, 'onboarding-documents');
-      if (!uploadResult.success) throw new Error(uploadResult.error || 'Upload to storage vault failed');
-
-      const docPayload: any = {
-        id: docId,
-        onboarding_id: recordId,
-        file_name: selectedFile.name,
-        original_name: selectedFile.name,
+      const uploadResult = await atomicUploadDocument({
+        file: selectedFile,
         category: uploadCategory,
-        storage_path: storagePath,
-        mime_type: selectedFile.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
-        file_size: selectedFile.size,
-        drive_backup_status: 'pending',
-      };
-      if (uploaderId) docPayload.uploaded_by = uploaderId;
-
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
-      if (!saveRes.success) throw new Error(saveRes.error);
-
-      await logAudit('document_uploaded', 'document', recordId, {
-        file_name: selectedFile.name,
-        category: uploadCategory,
-        size_bytes: selectedFile.size,
+        onboardingId: recordId,
+        uploaderId,
       });
 
-      toast.success('Document Vaulted', `${selectedFile.name} successfully encrypted & stored.`);
+      if (!uploadResult.success) {
+        throw new Error(uploadResult.error || 'Upload to storage vault failed');
+      }
+
+      toast.success('Document Vaulted & Verified', `${selectedFile.name} successfully encrypted & stored.`);
       setSelectedFile(null);
       onRefresh();
 
       // Trigger asynchronous Google Drive Disaster Recovery Backup in background
-      fetch('/api/google-drive-backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: docId, storagePath, mode: 'single' }),
-      }).then(() => onRefresh()).catch(() => {});
+      if (uploadResult.document?.id) {
+        fetch('/api/google-drive-backup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentId: uploadResult.document.id, mode: 'single' }),
+        }).then(() => onRefresh()).catch(() => {});
+      }
     } catch (err: any) {
       toast.error('Upload Failed', err.message);
     } finally {
@@ -196,47 +180,30 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
   const handleReplaceFile = async (file: File, docToReplace: OnboardingDocument) => {
     if (!recordId) return;
     try {
-      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
-      const storagePath = `${recordId}/${docToReplace.category}/${uniqueFileName}`;
-      const docId = crypto.randomUUID();
+      const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
       
-      const uploadResult = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
-      if (!uploadResult.success) throw new Error(uploadResult.error);
-
-      const docPayload: any = {
-        id: docId,
-        onboarding_id: recordId,
-        file_name: file.name,
-        original_name: file.name,
+      const uploadResult = await atomicUploadDocument({
+        file,
         category: docToReplace.category,
-        storage_path: storagePath,
-        mime_type: file.type || 'application/octet-stream',
-        file_size: file.size,
-        drive_backup_status: 'pending',
-      };
-
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
-      if (!saveRes.success) throw new Error(saveRes.error);
-
-      if (docToReplace.id && isValidUuid(docToReplace.id)) {
-        await saveDocumentMetadata('onboarding_documents', null, 'delete', { id: docToReplace.id });
-      }
-
-      await logAudit('document_uploaded', 'document', recordId, {
-        file_name: file.name, category: docToReplace.category, is_replacement: true
+        onboardingId: recordId,
+        uploaderId,
+        replaceDocId: docToReplace.id,
       });
 
-      toast.success('Document Replaced', `${file.name} successfully updated.`);
+      if (!uploadResult.success) throw new Error(uploadResult.error);
+
+      toast.success('Document Replaced & Storage Verified', `${file.name} successfully vaulted & verified.`);
       setReplaceTargetDoc(null);
       onRefresh();
 
       // Background backup to Google Drive
-      fetch('/api/google-drive-backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ documentId: docId, storagePath, mode: 'single' }),
-      }).then(() => onRefresh()).catch(() => {});
+      if (uploadResult.document?.id || docToReplace.id) {
+        fetch('/api/google-drive-backup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentId: uploadResult.document?.id || docToReplace.id, mode: 'single' }),
+        }).then(() => onRefresh()).catch(() => {});
+      }
     } catch (err: any) {
       toast.error('Replace Failed', err.message);
     }
@@ -314,7 +281,18 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
                       <div className="flex items-center gap-3">
                         {getDocIcon(doc.mime_type, doc.file_name)}
                         <div>
-                          <p className="font-bold text-gray-900 line-clamp-1" title={doc.file_name}>{doc.file_name}</p>
+                          <div className="flex items-center gap-2">
+                            <p className="font-bold text-gray-900 line-clamp-1" title={doc.file_name}>{doc.file_name}</p>
+                            {doc.storage_verified === false ? (
+                              <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                Source missing
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-emerald-600" title="Physical file verified in Supabase private vault">
+                                <CheckCircle2 className="w-3 h-3" />
+                              </span>
+                            )}
+                          </div>
                           <p className="text-[10px] font-mono text-gray-400">ID: {doc.id?.slice(0,8)}</p>
                         </div>
                       </div>

@@ -22,6 +22,7 @@ import { PageLayout } from '@/components/layout/PageLayout';
 import { ALLOWED_EMAIL_DOMAIN, APP_NAME, APP_SUBTITLE } from '@/lib/constants';
 import { getActiveSupabaseUrl, getActiveSupabaseAnonKey, setRuntimeSupabaseConfig } from '@/lib/supabase';
 import { useToast } from '@/lib/toast';
+import { verifyVaultStorage } from '@/lib/storage';
 
 export function Settings() {
   const { profile } = useAuth();
@@ -31,6 +32,42 @@ export function Settings() {
   const [supabaseUrl, setSupabaseUrl] = useState(getActiveSupabaseUrl());
   const [supabaseAnonKey, setSupabaseAnonKey] = useState(getActiveSupabaseAnonKey());
   const [isSaving, setIsSaving] = useState(false);
+
+  // Storage verification state
+  const [isVerifyingStorage, setIsVerifyingStorage] = useState(false);
+  const [storageVerifyData, setStorageVerifyData] = useState<{
+    total: number;
+    valid: number;
+    missing: number;
+    missingDocs: any[];
+  } | null>(null);
+
+  const handleRunStorageVerify = async () => {
+    setIsVerifyingStorage(true);
+    toast.info('Verifying Storage', 'Scanning physical files in private Supabase bucket...');
+    try {
+      const res = await verifyVaultStorage();
+      if (res.success) {
+        setStorageVerifyData({
+          total: res.totalDocuments || 0,
+          valid: res.validCount || 0,
+          missing: res.missingCount || 0,
+          missingDocs: res.missingDocuments || [],
+        });
+        if ((res.missingCount || 0) === 0) {
+          toast.success('Storage Verified', `All ${res.totalDocuments} document binaries exist and are readable in Supabase.`);
+        } else {
+          toast.warning('Storage Audit Warning', `${res.missingCount} legacy metadata rows lack physical files in storage.`);
+        }
+      } else {
+        toast.error('Verify Failed', res.error || 'Could not verify storage objects.');
+      }
+    } catch (err: any) {
+      toast.error('Verify Error', err.message);
+    } finally {
+      setIsVerifyingStorage(false);
+    }
+  };
 
   // Google Drive state
   const [gdriveStatus, setGdriveStatus] = useState<{
@@ -481,7 +518,17 @@ export function Settings() {
               </p>
             </div>
 
-            <div className="flex justify-end pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-3 pt-1 border-t border-gray-100">
+              <button
+                type="button"
+                onClick={handleRunStorageVerify}
+                disabled={isVerifyingStorage}
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-bold text-slate-800 bg-gray-100 hover:bg-gray-200 border border-gray-300 rounded-xl transition-all disabled:opacity-50 cursor-pointer"
+              >
+                <ShieldCheck className={`w-3.5 h-3.5 text-indigo-600 ${isVerifyingStorage ? 'animate-spin' : ''}`} />
+                {isVerifyingStorage ? 'Scanning Vault Objects...' : 'Verify Vault Storage'}
+              </button>
+
               <button
                 type="submit"
                 disabled={isSaving}
@@ -492,6 +539,39 @@ export function Settings() {
               </button>
             </div>
           </form>
+
+          {/* Storage Verification Result Diagnostic */}
+          {storageVerifyData && (
+            <div className={`p-4 rounded-xl border text-xs space-y-2 mt-3 ${
+              storageVerifyData.missing === 0
+                ? 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
+                : 'bg-amber-50/80 border-amber-200 text-amber-900'
+            }`}>
+              <div className="flex items-center justify-between font-bold">
+                <div className="flex items-center gap-2">
+                  {storageVerifyData.missing === 0 ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-amber-600" />
+                  )}
+                  <span>
+                    Supabase Storage Audit: {storageVerifyData.total} Total Documents | {storageVerifyData.valid} Valid Binaries | {storageVerifyData.missing} Missing
+                  </span>
+                </div>
+              </div>
+              {storageVerifyData.missing > 0 && (
+                <div className="space-y-1 pt-1">
+                  <p className="text-[11px] font-semibold text-amber-800">Missing source objects (legacy or test rows):</p>
+                  {storageVerifyData.missingDocs.map((d: any) => (
+                    <div key={d.id} className="text-[11px] text-red-700 bg-white/80 p-1.5 rounded border border-amber-200 flex items-center justify-between">
+                      <span><strong>{d.fileName}</strong> ({d.category})</span>
+                      <span className="text-[10px] text-gray-500 font-mono">path: {d.storagePath}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* Corporate Domain Restriction Setting */}

@@ -105,6 +105,9 @@ export interface OnboardingDocument {
   drive_backup_error?: string | null;
   drive_folder_id?: string | null;
   drive_web_url?: string | null;
+  // Storage Verification fields
+  storage_verified?: boolean | null;
+  storage_verified_at?: string | null;
   // Joined fields
   uploader_profile?: Profile;
   onboarding?: OnboardingRecord;
