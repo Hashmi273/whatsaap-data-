@@ -29,7 +29,7 @@ import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { getDocumentPreviewUrl } from '@/lib/download';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
-import { formatCategoryLabel, CATEGORY_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
+import { formatCategoryLabel, CATEGORY_OPTIONS, MAX_FILE_SIZE, getClientDisplayName } from '@/types/database';
 import type { OnboardingDocument, OnboardingRecord, DocumentCategory } from '@/types/database';
 import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData';
 import { isValidUuid, generateUuid } from '@/lib/constants';
@@ -385,7 +385,8 @@ export function DocumentVault() {
   const filteredRecords = (recordsWithDocs || []).filter((r) => {
     if (!searchTerm.trim()) return true;
     const term = searchTerm.toLowerCase();
-    const matchesBrand = r.brand_name.toLowerCase().includes(term);
+    const clientName = getClientDisplayName(r).toLowerCase();
+    const matchesBrand = clientName.includes(term);
     const matchesCompany = r.company_name?.toLowerCase().includes(term);
     const matchesDoc = r.documents.some((d) => d.file_name.toLowerCase().includes(term));
     return matchesBrand || matchesCompany || matchesDoc;
@@ -491,9 +492,9 @@ export function DocumentVault() {
                       <Building2 className="w-5 h-5" />
                     </div>
                     <div>
-                      <h3 className="text-base font-bold text-gray-900">{item.brand_name}</h3>
+                      <h3 className="text-base font-bold text-gray-900">{getClientDisplayName(item)}</h3>
                       <p className="text-xs text-gray-500">
-                        {item.whatsapp_number} {item.company_name ? `• ${item.company_name}` : ''} •{' '}
+                        {item.whatsapp_number} {item.company_name && item.company_name.trim().toLowerCase() !== getClientDisplayName(item).toLowerCase() ? `• ${item.company_name}` : ''} •{' '}
                         <span className="font-semibold text-blue-700">{item.documents.length} files securely stored</span>
                       </p>
                     </div>

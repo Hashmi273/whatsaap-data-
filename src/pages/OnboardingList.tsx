@@ -27,7 +27,7 @@ import { ExportData } from '@/components/onboarding/ExportData';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
-import { STATUS_OPTIONS, CLIENT_TYPE_OPTIONS } from '@/types/database';
+import { STATUS_OPTIONS, CLIENT_TYPE_OPTIONS, getClientDisplayName } from '@/types/database';
 import type { OnboardingRecord, Profile } from '@/types/database';
 import { format, formatDistanceToNow } from 'date-fns';
 
@@ -83,7 +83,7 @@ export function OnboardingList() {
       if (!res.success) throw new Error(res.error || 'Failed to delete record.');
 
       await logAudit('record_deleted', 'onboarding', record.id, {
-        brand_name: record.brand_name,
+        brand_name: getClientDisplayName(record),
       });
     },
     onSuccess: () => {
@@ -100,12 +100,13 @@ export function OnboardingList() {
   // Filter and sort records
   const filteredRecords = records
     .filter((record) => {
+      const clientName = getClientDisplayName(record);
       const matchesSearch =
-        record.brand_name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        record.company_name?.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        clientName.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        (record.company_name && record.company_name.toLowerCase().includes(searchTerm.toLowerCase())) ||
         record.whatsapp_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        record.contact_person?.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        record.client_type?.toLowerCase().includes(searchTerm.toLowerCase());
+        (record.contact_person && record.contact_person.toLowerCase().includes(searchTerm.toLowerCase())) ||
+        (record.client_type && record.client_type.toLowerCase().includes(searchTerm.toLowerCase()));
 
       const matchesStatus = selectedStatus === 'all' || record.status === selectedStatus;
       const matchesEmployee = selectedEmployee === 'all' || record.assigned_to === selectedEmployee;
@@ -121,7 +122,7 @@ export function OnboardingList() {
         return new Date(a.created_at || '').getTime() - new Date(b.created_at || '').getTime();
       }
       if (sortBy === 'brand') {
-        return a.brand_name.localeCompare(b.brand_name);
+        return getClientDisplayName(a).localeCompare(getClientDisplayName(b));
       }
       if (sortBy === 'status') {
         return a.status.localeCompare(b.status);
@@ -311,13 +312,13 @@ export function OnboardingList() {
                       <td className="py-3.5 px-4">
                         <div className="flex items-center gap-3">
                           <div className="w-8 h-8 rounded-lg bg-blue-50 text-[#1677FF] font-bold text-xs flex items-center justify-center flex-shrink-0 group-hover:bg-[#1677FF] group-hover:text-white transition-colors">
-                            {record.brand_name.charAt(0).toUpperCase()}
+                            {getClientDisplayName(record).charAt(0).toUpperCase()}
                           </div>
                           <div>
                             <p className="font-bold text-gray-900 group-hover:text-[#1677FF] transition-colors">
-                              {record.brand_name}
+                              {getClientDisplayName(record)}
                             </p>
-                            {record.company_name && (
+                            {record.company_name && record.company_name.trim().toLowerCase() !== getClientDisplayName(record).toLowerCase() && (
                               <p className="text-[11px] text-gray-400">{record.company_name}</p>
                             )}
                           </div>
@@ -410,8 +411,8 @@ export function OnboardingList() {
                 >
                   <div className="flex items-start justify-between">
                     <div>
-                      <h4 className="font-bold text-gray-900 text-sm">{record.brand_name}</h4>
-                      {record.company_name && (
+                      <h4 className="font-bold text-gray-900 text-sm">{getClientDisplayName(record)}</h4>
+                      {record.company_name && record.company_name.trim().toLowerCase() !== getClientDisplayName(record).toLowerCase() && (
                         <p className="text-xs text-gray-500">{record.company_name}</p>
                       )}
                     </div>
@@ -459,7 +460,7 @@ export function OnboardingList() {
             onClose={() => setDeleteConfirmRecord(null)}
             onConfirm={() => deleteMutation.mutate(deleteConfirmRecord)}
             title="Delete Client Record"
-            message={`Are you sure you want to permanently delete "${deleteConfirmRecord.brand_name}"? All associated Meta Portfolio records, WABAs, phone numbers, and documents will also be removed.`}
+            message={`Are you sure you want to permanently delete "${getClientDisplayName(deleteConfirmRecord)}"? All associated Meta Portfolio records, WABAs, phone numbers, and documents will also be removed.`}
             confirmLabel="Delete Client"
             variant="danger"
           />

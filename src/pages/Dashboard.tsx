@@ -32,7 +32,7 @@ import { supabase } from '@/lib/supabase';
 import { fetchDocumentMetadata } from '@/lib/storage';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { StatusBadge } from '@/components/shared/StatusBadge';
-import { formatCategoryLabel } from '@/types/database';
+import { formatCategoryLabel, getClientDisplayName } from '@/types/database';
 import type { OnboardingRecord, OnboardingDocument, AuditLog, Profile } from '@/types/database';
 import { format, formatDistanceToNow } from 'date-fns';
 
@@ -429,11 +429,11 @@ export function Dashboard() {
                   >
                     <div className="flex items-center gap-3 min-w-0">
                       <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#1677FF] font-bold text-sm flex items-center justify-center flex-shrink-0">
-                        {rec.brand_name.charAt(0).toUpperCase()}
+                        {getClientDisplayName(rec).charAt(0).toUpperCase()}
                       </div>
                       <div className="min-w-0">
                         <p className="text-sm font-semibold text-gray-900 truncate hover:text-[#1677FF]">
-                          {rec.brand_name}
+                          {getClientDisplayName(rec)}
                         </p>
                         <p className="text-xs text-gray-500 font-mono">
                           {rec.whatsapp_number}

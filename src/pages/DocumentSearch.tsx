@@ -25,7 +25,7 @@ import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModa
 import { logAudit } from '@/lib/audit';
 import { getDocumentPreviewUrl, downloadDocument } from '@/lib/download';
 import { useToast } from '@/lib/toast';
-import { CATEGORY_OPTIONS, formatCategoryLabel } from '@/types/database';
+import { CATEGORY_OPTIONS, formatCategoryLabel, getClientDisplayName } from '@/types/database';
 import type {
   DocumentCategory,
   OnboardingDocument,
@@ -270,7 +270,7 @@ export function DocumentSearch() {
                           className="flex items-center gap-1 text-xs text-[#1677FF] hover:underline font-semibold mt-0.5 cursor-pointer"
                         >
                           <Building2 className="w-3 h-3" />
-                          <span>{doc.onboarding.brand_name}</span>
+                          <span>{getClientDisplayName(doc.onboarding)}</span>
                           <ExternalLink className="w-2.5 h-2.5 opacity-60" />
                         </div>
                       )}

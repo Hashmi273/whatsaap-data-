@@ -31,7 +31,7 @@ import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
-import { STATUS_OPTIONS } from '@/types/database';
+import { STATUS_OPTIONS, getClientDisplayName } from '@/types/database';
 import type { RcsOnboardingRecord, OnboardingStatus, Profile } from '@/types/database';
 import { format } from 'date-fns';
 
@@ -368,10 +368,10 @@ export function RcsList() {
                           </div>
                           <div>
                             <p className="font-bold text-gray-900 hover:text-[#1677FF] transition-colors">
-                              {item.brand_name}
+                              {getClientDisplayName(item)}
                             </p>
                             <span className="text-[11px] text-gray-500 line-clamp-1">
-                              {item.company_name || 'Legal entity pending'}
+                              {item.company_name && item.company_name.trim().toLowerCase() !== getClientDisplayName(item).toLowerCase() ? item.company_name : 'Legal entity verified'}
                             </span>
                           </div>
                         </div>

@@ -339,4 +339,27 @@ export const ALLOWED_FILE_TYPES = [
 
 export const ALLOWED_EXTENSIONS = ['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.docx', '.doc'];
 
+/**
+ * Safely resolves the display name for a client record.
+ * Priority:
+ * 1. brand_name (trimmed)
+ * 2. company_name (trimmed)
+ * 3. Fallback: "Unnamed Client"
+ * NEVER returns generic "Immense Client".
+ */
+export function getClientDisplayName(
+  record?: {
+    brand_name?: string | null;
+    company_name?: string | null;
+    legal_company_name?: string | null;
+  } | null
+): string {
+  if (!record) return 'Unnamed Client';
+  const brand = (record.brand_name || '').trim();
+  if (brand && brand.toLowerCase() !== 'immense client') return brand;
+  const company = (record.company_name || record.legal_company_name || '').trim();
+  if (company && company.toLowerCase() !== 'immense client') return company;
+  return 'Unnamed Client';
+}
+
 export const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB

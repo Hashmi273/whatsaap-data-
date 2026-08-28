@@ -24,7 +24,7 @@ import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
 import { saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
-import { STATUS_OPTIONS, formatStatusLabel } from '@/types/database';
+import { STATUS_OPTIONS, formatStatusLabel, getClientDisplayName } from '@/types/database';
 import type {
   OnboardingRecord,
   OnboardingDocument,
@@ -98,8 +98,8 @@ export function OnboardingDetail() {
             creator_profile: Profile | null;
           };
         }
-      } catch {
-        // Fallback
+      } catch (clientErr) {
+        console.warn('Supabase client error:', clientErr);
       }
 
       // 3. Check local storage
@@ -176,7 +176,7 @@ export function OnboardingDetail() {
   // Change Status Mutation
   const statusMutation = useMutation({
     mutationFn: async (newStatus: OnboardingStatus) => {
-      if (!id) return;
+      if (!id || !record) return;
       const res = await saveDocumentMetadata(
         'onboarding_records',
         { status: newStatus, updated_at: new Date().toISOString() },
@@ -186,6 +186,7 @@ export function OnboardingDetail() {
       if (!res.success) throw new Error(res.error || 'Failed to update record status.');
 
       await logAudit('record_edited', 'onboarding', id, {
+        brand_name: getClientDisplayName(record),
         previous_status: record?.status,
         new_status: newStatus,
       });
@@ -282,7 +283,7 @@ export function OnboardingDetail() {
   ];
 
   return (
-    <PageLayout title={record?.brand_name || 'Client Details'}>
+    <PageLayout title={getClientDisplayName(record)}>
       <div className="space-y-6 pb-12">
         {/* Top Header Card */}
         <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
@@ -298,7 +299,7 @@ export function OnboardingDetail() {
               <div>
                 <div className="flex flex-wrap items-center gap-2.5">
                   <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
-                    {record.brand_name || 'Unnamed Brand'}
+                    {getClientDisplayName(record)}
                   </h1>
                   <StatusBadge status={record.status} />
                   {record.client_type && (
@@ -308,7 +309,7 @@ export function OnboardingDetail() {
                   )}
                 </div>
                 <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-500">
-                  {record.company_name && (
+                  {record.company_name && record.company_name.trim().toLowerCase() !== getClientDisplayName(record).toLowerCase() && (
                     <span className="flex items-center gap-1">
                       <Building2 className="w-3.5 h-3.5 text-gray-400" />
                       {record.company_name}
