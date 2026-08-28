@@ -109,31 +109,22 @@ export function DisasterRecovery() {
   // Trigger Google Drive Backup for a single company
   const handleBackupNow = async (record: OnboardingRecord) => {
     setBackingUpId(record.id);
-    toast.info('Backup Dispatched', `Backing up ${record.brand_name} to Google Drive (parvejweb1@gmail.com)...`);
+    toast.info('Backup Dispatched', `Backing up ${record.brand_name} documents to Google Drive...`);
 
     try {
       const relatedDocs = allDocs.filter((d) => d.onboarding_id === record.id);
-      const isRcs = (record.platform || '').toLowerCase().includes('rcs');
 
-      const res = await fetch('/api/google-drive-backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recordId: record.id,
-          platform: isRcs ? 'RCS' : 'WhatsApp',
-          companyName: record.company_name || record.brand_name,
-          documents: relatedDocs,
-        }),
-      });
-
-      const data = await res.json();
-      if (data.success) {
-        toast.success('Backup Succeeded', `${record.brand_name} archived in IMMENSE BACKUP/${isRcs ? 'RCS' : 'WhatsApp'}/${record.company_name || record.brand_name}`);
-        queryClient.invalidateQueries({ queryKey: ['dr-onboarding-records'] });
-        queryClient.invalidateQueries({ queryKey: ['gdrive-storage-status'] });
-      } else {
-        toast.error('Backup Notice', data.error || 'Google Drive backup failed. Click Retry.');
+      for (const doc of relatedDocs) {
+        await fetch('/api/google-drive-backup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ documentId: doc.id, mode: 'single' }),
+        });
       }
+
+      toast.success('Backup Succeeded', `${record.brand_name} vaulted in IMMENSE Portal/`);
+      queryClient.invalidateQueries({ queryKey: ['dr-onboarding-records'] });
+      queryClient.invalidateQueries({ queryKey: ['gdrive-storage-status'] });
     } catch (err: any) {
       toast.error('Backup Error', err.message || 'Error triggering Google Drive backup.');
     } finally {
@@ -143,15 +134,27 @@ export function DisasterRecovery() {
 
   // Trigger Global Backup for all records
   const handleBackupAll = async () => {
-    if (records.length === 0) {
-      toast.info('No Records', 'There are no onboarding records to back up.');
-      return;
+    toast.info('Bulk Backup', 'Starting Google Drive disaster recovery sync for all vaulted documents...');
+    try {
+      const res = await fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mode: 'full' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success(
+          'Bulk Backup Complete',
+          `${data.totalScanned} documents scanned • ${data.alreadyBackedUp} already up-to-date • ${data.newlyBackedUp} newly backed up`
+        );
+        queryClient.invalidateQueries({ queryKey: ['dr-onboarding-records'] });
+        queryClient.invalidateQueries({ queryKey: ['gdrive-storage-status'] });
+      } else {
+        toast.error('Backup Notice', data.error || 'Google Drive backup failed.');
+      }
+    } catch (err: any) {
+      toast.error('Backup Error', err.message);
     }
-    toast.info('Bulk Backup', `Starting Google Drive backup for ${records.length} records...`);
-    for (const rec of records) {
-      await handleBackupNow(rec);
-    }
-    toast.success('Bulk Backup Complete', 'All records have been synchronized with Google Drive.');
   };
 
   // Download Complete Client ZIP

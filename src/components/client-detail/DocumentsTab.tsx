@@ -1,7 +1,7 @@
 import { useState, useRef } from 'react';
 import { 
   FolderLock, UploadCloud, FileText, Download, Trash2, Edit,
-  FileCheck2, FileSpreadsheet, FileImage
+  FileCheck2, FileSpreadsheet, FileImage, CheckCircle2, AlertCircle, RotateCw, ExternalLink
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { useToast } from '@/lib/toast';
@@ -12,7 +12,6 @@ import { isValidUuid } from '@/lib/constants';
 import { logAudit } from '@/lib/audit';
 import { formatCategoryLabel, CATEGORY_OPTIONS, MAX_FILE_SIZE } from '@/types/database';
 import type { OnboardingRecord, OnboardingDocument, DocumentCategory } from '@/types/database';
-import { StatusBadge } from '@/components/shared/StatusBadge';
 import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
 import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
 import { format } from 'date-fns';
@@ -39,6 +38,8 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
   const replaceDocInputRef = useRef<HTMLInputElement>(null);
 
   const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
+  const [backingUpDocId, setBackingUpDocId] = useState<string | null>(null);
+  const [restoringDocId, setRestoringDocId] = useState<string | null>(null);
 
   const handleUploadDocument = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -61,12 +62,13 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
       const uniqueFileName = `${Date.now()}_${sanitizedName}`;
       const storagePath = `${recordId}/${uploadCategory}/${uniqueFileName}`;
       const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
+      const docId = crypto.randomUUID();
 
       const uploadResult = await uploadDocumentToStorage(storagePath, selectedFile, 'onboarding-documents');
-      if (!uploadResult.success) throw new Error(uploadResult.error);
+      if (!uploadResult.success) throw new Error(uploadResult.error || 'Upload to storage vault failed');
 
       const docPayload: any = {
-        id: crypto.randomUUID(),
+        id: docId,
         onboarding_id: recordId,
         file_name: selectedFile.name,
         original_name: selectedFile.name,
@@ -74,6 +76,7 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
         storage_path: storagePath,
         mime_type: selectedFile.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
         file_size: selectedFile.size,
+        drive_backup_status: 'pending',
       };
       if (uploaderId) docPayload.uploaded_by = uploaderId;
 
@@ -89,10 +92,67 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
       toast.success('Document Vaulted', `${selectedFile.name} successfully encrypted & stored.`);
       setSelectedFile(null);
       onRefresh();
+
+      // Trigger asynchronous Google Drive Disaster Recovery Backup in background
+      fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: docId, storagePath, mode: 'single' }),
+      }).then(() => onRefresh()).catch(() => {});
     } catch (err: any) {
       toast.error('Upload Failed', err.message);
     } finally {
       setIsUploading(false);
+    }
+  };
+
+  const handleBackupSingle = async (doc: OnboardingDocument) => {
+    setBackingUpDocId(doc.id);
+    toast.info('Google Drive Backup', `Backing up "${doc.file_name}" to Google Drive...`);
+    try {
+      const res = await fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: doc.id, mode: 'single' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success('DR Backup Complete', `${doc.file_name} successfully backed up to Google Drive.`);
+        onRefresh();
+      } else {
+        toast.error('DR Backup Failed', data.error || 'Could not complete Google Drive backup.');
+      }
+    } catch (err: any) {
+      toast.error('Backup Error', err.message);
+    } finally {
+      setBackingUpDocId(null);
+    }
+  };
+
+  const handleRestoreSingle = async (doc: OnboardingDocument) => {
+    if (!doc.drive_file_id) {
+      toast.error('No Backup Found', 'This file has not yet been backed up to Google Drive.');
+      return;
+    }
+    setRestoringDocId(doc.id);
+    toast.info('DR Restore Started', `Restoring "${doc.file_name}" from Google Drive...`);
+    try {
+      const res = await fetch('/api/google-drive-restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: doc.id }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success('Restored Successfully', `${doc.file_name} restored into Supabase Vault.`);
+        onRefresh();
+      } else {
+        toast.error('Restore Failed', data.error || 'Could not restore file from Google Drive.');
+      }
+    } catch (err: any) {
+      toast.error('Restore Error', err.message);
+    } finally {
+      setRestoringDocId(null);
     }
   };
 
@@ -139,11 +199,13 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
       const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
       const uniqueFileName = `${Date.now()}_${sanitizedName}`;
       const storagePath = `${recordId}/${docToReplace.category}/${uniqueFileName}`;
+      const docId = crypto.randomUUID();
       
       const uploadResult = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
       if (!uploadResult.success) throw new Error(uploadResult.error);
 
       const docPayload: any = {
+        id: docId,
         onboarding_id: recordId,
         file_name: file.name,
         original_name: file.name,
@@ -151,6 +213,7 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
         storage_path: storagePath,
         mime_type: file.type || 'application/octet-stream',
         file_size: file.size,
+        drive_backup_status: 'pending',
       };
 
       const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
@@ -167,6 +230,13 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
       toast.success('Document Replaced', `${file.name} successfully updated.`);
       setReplaceTargetDoc(null);
       onRefresh();
+
+      // Background backup to Google Drive
+      fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: docId, storagePath, mode: 'single' }),
+      }).then(() => onRefresh()).catch(() => {});
     } catch (err: any) {
       toast.error('Replace Failed', err.message);
     }
@@ -186,7 +256,7 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
             <div className="p-2 rounded-lg bg-indigo-50 text-indigo-600"><FolderLock className="w-5 h-5" /></div>
             <div>
               <h3 className="text-base font-bold text-gray-900">Encrypted Document Vault</h3>
-              <p className="text-xs text-gray-500 mt-0.5">Secure storage for verified business documents</p>
+              <p className="text-xs text-gray-500 mt-0.5">Primary AES-256 Vault + Secondary Google Drive DR Archive</p>
             </div>
           </div>
         </div>
@@ -231,6 +301,7 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
                 <tr>
                   <th className="px-4 py-3">Document</th>
                   <th className="px-4 py-3">Category</th>
+                  <th className="px-4 py-3 hidden md:table-cell">DR Backup</th>
                   <th className="px-4 py-3 hidden md:table-cell">Size</th>
                   <th className="px-4 py-3 hidden sm:table-cell">Uploaded</th>
                   <th className="px-4 py-3 text-right">Actions</th>
@@ -253,6 +324,51 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
                         {formatCategoryLabel(doc.category)}
                       </span>
                     </td>
+                    <td className="px-4 py-3 hidden md:table-cell">
+                      {doc.drive_backup_status === 'backed_up' ? (
+                        <a
+                          href={doc.drive_web_url || '#'}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 transition-colors"
+                          title={`Google Drive Backup Verified • ${doc.drive_file_id || ''}`}
+                        >
+                          <CheckCircle2 className="w-3 h-3 text-emerald-600" />
+                          <span>Backed Up</span>
+                          {doc.drive_web_url && <ExternalLink className="w-2.5 h-2.5 ml-0.5 opacity-70" />}
+                        </a>
+                      ) : doc.drive_backup_status === 'failed' ? (
+                        <button
+                          type="button"
+                          onClick={() => handleBackupSingle(doc)}
+                          disabled={backingUpDocId === doc.id}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 transition-colors cursor-pointer"
+                          title={doc.drive_backup_error || 'Retry Backup to Google Drive'}
+                        >
+                          {backingUpDocId === doc.id ? (
+                            <RotateCw className="w-3 h-3 animate-spin text-red-600" />
+                          ) : (
+                            <AlertCircle className="w-3 h-3 text-red-600" />
+                          )}
+                          <span>Retry Backup</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleBackupSingle(doc)}
+                          disabled={backingUpDocId === doc.id}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200 hover:bg-amber-100 transition-colors cursor-pointer"
+                          title="Backup to Google Drive"
+                        >
+                          {backingUpDocId === doc.id ? (
+                            <RotateCw className="w-3 h-3 animate-spin text-amber-600" />
+                          ) : (
+                            <UploadCloud className="w-3 h-3 text-amber-600" />
+                          )}
+                          <span>Backup Pending</span>
+                        </button>
+                      )}
+                    </td>
                     <td className="px-4 py-3 text-xs text-gray-500 hidden md:table-cell font-mono">
                       {doc.file_size ? (doc.file_size / 1024).toFixed(1) + ' KB' : '—'}
                     </td>
@@ -261,6 +377,20 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
                     </td>
                     <td className="px-4 py-3 text-right">
                       <div className="flex items-center justify-end gap-1.5 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity">
+                        {doc.drive_file_id && (
+                          <button
+                            onClick={() => handleRestoreSingle(doc)}
+                            disabled={restoringDocId === doc.id}
+                            className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+                            title="Restore binary from Google Drive DR"
+                          >
+                            {restoringDocId === doc.id ? (
+                              <RotateCw className="w-4 h-4 animate-spin text-blue-600" />
+                            ) : (
+                              <RotateCw className="w-4 h-4" />
+                            )}
+                          </button>
+                        )}
                         <input type="file" className="hidden" ref={replaceDocInputRef} onChange={(e) => {
                           if (e.target.files?.[0] && replaceTargetDoc) {
                             handleReplaceFile(e.target.files[0], replaceTargetDoc);
@@ -310,3 +440,5 @@ export function DocumentsTab({ recordId, record, documents, onRefresh }: Documen
     </div>
   );
 }
+
+export default DocumentsTab;

@@ -15,7 +15,10 @@ import {
   Plus,
   X,
   ShieldCheck,
-  AlertCircle
+  AlertCircle,
+  CheckCircle2,
+  RotateCw,
+  ExternalLink
 } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
 import { useAuth } from '@/lib/auth';
@@ -294,6 +297,59 @@ export function DocumentVault() {
     }
   };
 
+  const [backingUpDocId, setBackingUpDocId] = useState<string | null>(null);
+  const [restoringDocId, setRestoringDocId] = useState<string | null>(null);
+
+  const handleBackupSingle = async (doc: OnboardingDocument) => {
+    setBackingUpDocId(doc.id);
+    toast.info('Google Drive Backup', `Backing up "${doc.file_name}" to Google Drive...`);
+    try {
+      const res = await fetch('/api/google-drive-backup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: doc.id, mode: 'single' }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success('DR Backup Complete', `${doc.file_name} successfully backed up to Google Drive.`);
+        queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+      } else {
+        toast.error('DR Backup Failed', data.error || 'Could not complete Google Drive backup.');
+      }
+    } catch (err: any) {
+      toast.error('Backup Error', err.message);
+    } finally {
+      setBackingUpDocId(null);
+    }
+  };
+
+  const handleRestoreSingle = async (doc: OnboardingDocument) => {
+    if (!doc.drive_file_id) {
+      toast.error('No Backup Found', 'This file has not yet been backed up to Google Drive.');
+      return;
+    }
+    setRestoringDocId(doc.id);
+    toast.info('DR Restore Started', `Restoring "${doc.file_name}" from Google Drive...`);
+    try {
+      const res = await fetch('/api/google-drive-restore', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ documentId: doc.id }),
+      });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        toast.success('Restored Successfully', `${doc.file_name} restored into Supabase Vault.`);
+        queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
+      } else {
+        toast.error('Restore Failed', data.error || 'Could not restore file from Google Drive.');
+      }
+    } catch (err: any) {
+      toast.error('Restore Error', err.message);
+    } finally {
+      setRestoringDocId(null);
+    }
+  };
+
   const getDocIcon = (mime: string, name: string) => {
     if (mime.includes('pdf') || name.endsWith('.pdf')) {
       return <FileText className="w-4 h-4 text-red-500" />;
@@ -409,13 +465,48 @@ export function DocumentVault() {
                             <p className="text-xs font-semibold text-gray-900 truncate">
                               {doc.file_name}
                             </p>
-                            <span className="text-[10px] text-gray-500 font-medium">
-                              {formatCategoryLabel(doc.category)}
-                            </span>
+                            <div className="flex items-center gap-2 mt-0.5">
+                              <span className="text-[10px] text-gray-500 font-medium">
+                                {formatCategoryLabel(doc.category)}
+                              </span>
+                              {doc.drive_backup_status === 'backed_up' ? (
+                                <span className="inline-flex items-center gap-0.5 text-[9px] font-bold text-emerald-700 bg-emerald-50 px-1.5 py-0.2 rounded" title="Google Drive DR Verified">
+                                  <CheckCircle2 className="w-2.5 h-2.5 text-emerald-600" /> DR
+                                </span>
+                              ) : doc.drive_backup_status === 'failed' ? (
+                                <button
+                                  onClick={() => handleBackupSingle(doc)}
+                                  disabled={backingUpDocId === doc.id}
+                                  className="inline-flex items-center gap-0.5 text-[9px] font-bold text-red-700 bg-red-50 hover:bg-red-100 px-1.5 py-0.2 rounded transition-colors"
+                                  title={doc.drive_backup_error || 'Retry DR Backup'}
+                                >
+                                  <AlertCircle className="w-2.5 h-2.5 text-red-600" /> Retry
+                                </button>
+                              ) : (
+                                <button
+                                  onClick={() => handleBackupSingle(doc)}
+                                  disabled={backingUpDocId === doc.id}
+                                  className="inline-flex items-center gap-0.5 text-[9px] font-bold text-amber-700 bg-amber-50 hover:bg-amber-100 px-1.5 py-0.2 rounded transition-colors"
+                                  title="Backup to Google Drive"
+                                >
+                                  <UploadCloud className="w-2.5 h-2.5 text-amber-600" /> DR
+                                </button>
+                              )}
+                            </div>
                           </div>
                         </div>
 
                         <div className="flex items-center gap-1 flex-shrink-0">
+                          {doc.drive_file_id && (
+                            <button
+                              onClick={() => handleRestoreSingle(doc)}
+                              disabled={restoringDocId === doc.id}
+                              className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"
+                              title="Restore binary from Google Drive DR"
+                            >
+                              <RotateCw className={`w-3.5 h-3.5 ${restoringDocId === doc.id ? 'animate-spin text-blue-600' : ''}`} />
+                            </button>
+                          )}
                           <button
                             onClick={() => handlePreview(doc)}
                             className="p-1.5 text-gray-400 hover:text-[#1677FF] hover:bg-blue-50 rounded-lg cursor-pointer transition-colors"

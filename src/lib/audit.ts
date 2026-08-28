@@ -33,7 +33,15 @@ export type AuditAction =
   | 'profile_updated'
   | 'meta_asset_updated'
   | 'meta_asset_created'
-  | 'meta_asset_deleted';
+  | 'meta_asset_deleted'
+  | 'GOOGLE_DRIVE_CONNECTED'
+  | 'GOOGLE_DRIVE_DISCONNECTED'
+  | 'DRIVE_BACKUP_STARTED'
+  | 'DRIVE_BACKUP_COMPLETED'
+  | 'DRIVE_BACKUP_FAILED'
+  | 'DRIVE_RESTORE_STARTED'
+  | 'DRIVE_RESTORE_COMPLETED'
+  | 'DRIVE_RESTORE_FAILED';
 
 export type EntityType = 'onboarding' | 'document' | 'employee' | 'credential' | 'auth' | 'system' | 'meta_asset';
 

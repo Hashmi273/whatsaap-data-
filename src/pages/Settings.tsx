@@ -35,7 +35,9 @@ export function Settings() {
   // Google Drive state
   const [gdriveStatus, setGdriveStatus] = useState<{
     isConnected: boolean;
-    targetAccount: string;
+    targetAccount: string | null;
+    error?: string | null;
+    code?: string | null;
     storageQuota?: {
       usedBytes: number;
       totalBytes: number;
@@ -44,10 +46,14 @@ export function Settings() {
       totalFormatted: string;
     };
     stats?: {
-      totalRecords: number;
-      totalBackupFiles: number;
-      lastBackupAt: string;
+      totalDocuments: number;
+      backedUpCount: number;
+      pendingCount: number;
+      failedCount: number;
+      lastBackupAt: string | null;
     };
+    rootFolder?: string;
+    subFolders?: string[];
   } | null>(null);
   const [isGdriveLoading, setIsGdriveLoading] = useState(false);
   const [isDisconnecting, setIsDisconnecting] = useState(false);
@@ -60,10 +66,6 @@ export function Settings() {
       if (res.ok) {
         const data = await res.json();
         setGdriveStatus(data);
-        // Surface exact diagnosis in console when badge shows not-connected despite successful call
-        if (!data.isConnected && data.connectionDetermination) {
-          console.warn('[GDRIVE-STATUS] Not connected. Determination:', data.connectionDetermination, '| Diagnostics:', data.diagnostics);
-        }
       }
     } catch {
       // Ignore
@@ -83,11 +85,9 @@ export function Settings() {
     if (gdriveParam === 'connected') {
       toast.success('Google Drive Connected', `Successfully authenticated with ${emailParam || 'Google Drive'}.`);
       setSearchParams({});
-      // The callback just wrote tokens to DB — re-fetch status after a brief
-      // delay to let the DB write propagate and update the badge automatically.
       setTimeout(() => {
         fetchGdriveStatus();
-      }, 1500);
+      }, 1000);
     } else if (gdriveError) {
       toast.error('Google Drive Connection Failed', decodeURIComponent(gdriveError));
       setSearchParams({});
@@ -123,29 +123,22 @@ export function Settings() {
       const res = await fetch('/api/google-drive-backup', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ recordId: 'all' }),
+        body: JSON.stringify({ mode: 'full' }),
       });
 
-      const rawText = await res.text();
-      let data: any;
-      try {
-        data = JSON.parse(rawText);
-      } catch {
-        data = {
-          success: false,
-          error: `Server error (HTTP ${res.status}): ${rawText.slice(0, 300)}`,
-          code: 'NON_JSON_RESPONSE',
-        };
-      }
+      const data = await res.json().catch(() => ({ success: false, error: 'Server returned non-JSON response' }));
 
       if (res.ok && data.success) {
-        if (data.backedUpCount > 0) {
+        if (data.failedCount === 0) {
           toast.success(
-            'Backup Verified & Complete',
-            `Successfully vaulted and verified ${data.backedUpCount} document(s) in My Drive under IMMENSE Portal/All Companies Archive/.`
+            'DR Backup Complete',
+            `${data.totalScanned} documents scanned • ${data.alreadyBackedUp} already backed up • ${data.newlyBackedUp} newly backed up`
           );
         } else {
-          toast.info('Hierarchy Verified', 'Google Drive folder structure verified in My Drive. No new unbacked documents found.');
+          toast.warning(
+            'DR Backup Completed With Errors',
+            `${data.totalScanned} scanned • ${data.newlyBackedUp} backed up • ${data.failedCount} failed (${data.failedDocuments?.slice(0, 2).join(', ')})`
+          );
         }
         await fetchGdriveStatus();
       } else {
@@ -232,7 +225,13 @@ export function Settings() {
               <div className="flex items-center justify-between">
                 <span className="text-gray-500 font-medium">Sub-folders:</span>
                 <span className="text-[11px] text-gray-600 font-mono">
-                  [GST, PAN, Logo, Banner, Other Documents]
+                  GST | PAN | Logo | Banner | Other Documents
+                </span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-gray-500 font-medium">Last Backup:</span>
+                <span className="text-gray-700 font-medium">
+                  {gdriveStatus?.stats?.lastBackupAt ? new Date(gdriveStatus.stats.lastBackupAt).toLocaleString() : 'No recent backup'}
                 </span>
               </div>
             </div>
@@ -264,6 +263,12 @@ export function Settings() {
                   {gdriveStatus?.isConnected ? `${gdriveStatus?.storageQuota?.usagePercent ?? 0}% consumed` : 'Not connected'}
                 </span>
               </div>
+              <div className="flex items-center justify-between pt-1 border-t border-gray-200/60 text-[11px]">
+                <span className="text-gray-500">Vaulted Documents:</span>
+                <span className="font-semibold text-gray-800">
+                  {gdriveStatus?.stats?.backedUpCount ?? 0} / {gdriveStatus?.stats?.totalDocuments ?? 0} backed up
+                </span>
+              </div>
             </div>
           </div>
 
@@ -271,15 +276,25 @@ export function Settings() {
           <div className="flex flex-wrap items-center justify-between gap-3 pt-2">
             <div className="flex items-center gap-2">
               {gdriveStatus?.isConnected ? (
-                <button
-                  type="button"
-                  onClick={handleDisconnectGoogleDrive}
-                  disabled={isDisconnecting}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition-all cursor-pointer disabled:opacity-50"
-                >
-                  <LogOut className="w-3.5 h-3.5" />
-                  {isDisconnecting ? 'Disconnecting...' : 'Disconnect Google Drive'}
-                </button>
+                <>
+                  <button
+                    type="button"
+                    onClick={handleConnectGoogleDrive}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-all cursor-pointer"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Reconnect Google Drive
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleDisconnectGoogleDrive}
+                    disabled={isDisconnecting}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 rounded-xl transition-all cursor-pointer disabled:opacity-50"
+                  >
+                    <LogOut className="w-3.5 h-3.5" />
+                    {isDisconnecting ? 'Disconnecting...' : 'Disconnect'}
+                  </button>
+                </>
               ) : (
                 <button
                   type="button"
@@ -306,8 +321,8 @@ export function Settings() {
             <button
               type="button"
               onClick={handleTriggerManualBackup}
-              disabled={isBackingUp}
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50"
+              disabled={isBackingUp || !gdriveStatus?.isConnected}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-bold text-white bg-slate-900 hover:bg-slate-800 rounded-xl shadow-xs transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
             >
               <CloudUpload className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-spin' : ''}`} />
               {isBackingUp ? 'Backing Up...' : 'Trigger Full DR Backup'}

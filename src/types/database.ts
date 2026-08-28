@@ -98,6 +98,13 @@ export interface OnboardingDocument {
   file_size: number;
   uploaded_by: string | null;
   created_at: string;
+  // Google Drive Disaster Recovery Backup fields
+  drive_file_id?: string | null;
+  drive_backup_status?: 'backed_up' | 'pending' | 'failed' | null;
+  drive_backup_at?: string | null;
+  drive_backup_error?: string | null;
+  drive_folder_id?: string | null;
+  drive_web_url?: string | null;
   // Joined fields
   uploader_profile?: Profile;
   onboarding?: OnboardingRecord;
