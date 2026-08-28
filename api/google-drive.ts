@@ -202,6 +202,8 @@ async function fetchFileFromSupabaseStorage(
     category?: string;
     mime_type?: string;
     onboarding_id?: string;
+    bucket_id?: string;
+    bucket?: string;
   }
 ): Promise<{
   buffer: Buffer;
@@ -209,15 +211,52 @@ async function fetchFileFromSupabaseStorage(
   matchedBucket: string;
   matchedPath: string;
 }> {
-  const buckets = ['onboarding-documents', 'documents', 'rcs-documents'];
-  const rawPath = (doc.storage_path || '').trim();
-  const cleanPath = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath;
+  // 1. Resolve actual project bucket(s) dynamically from Supabase Storage API
+  let availableBuckets: string[] = [];
+  try {
+    const bRes = await fetch(`${supabaseUrl}/storage/v1/bucket`, {
+      headers: {
+        apikey: supabaseServiceKey,
+        Authorization: `Bearer ${supabaseServiceKey}`,
+      },
+    });
+    if (bRes.ok) {
+      const bList: any = await bRes.json().catch(() => []);
+      if (Array.isArray(bList) && bList.length > 0) {
+        availableBuckets = bList.map((b: any) => b.id || b.name).filter(Boolean);
+      }
+    }
+  } catch {
+    // Ignore
+  }
 
+  // Fallback to primary bucket if API call failed
+  if (availableBuckets.length === 0) {
+    availableBuckets = ['onboarding-documents'];
+  }
+
+  // Determine target bucket: prioritize document metadata if set and valid
+  const explicitBucket = (doc.bucket_id || doc.bucket || '').trim();
+  let targetBuckets: string[] = [];
+  if (explicitBucket && availableBuckets.includes(explicitBucket)) {
+    targetBuckets = [explicitBucket];
+  } else if (availableBuckets.includes('onboarding-documents')) {
+    targetBuckets = ['onboarding-documents', ...availableBuckets.filter((b) => b !== 'onboarding-documents')];
+  } else {
+    targetBuckets = availableBuckets;
+  }
+
+  const rawPath = (doc.storage_path || '').trim();
+  let cleanPath = rawPath.startsWith('/') ? rawPath.slice(1) : rawPath;
+
+  // Build candidate paths
   const candidatePaths: string[] = [];
   if (cleanPath) {
     candidatePaths.push(cleanPath);
-    if (cleanPath.startsWith('onboarding-documents/')) {
-      candidatePaths.push(cleanPath.replace(/^onboarding-documents\//, ''));
+    for (const b of availableBuckets) {
+      if (cleanPath.startsWith(`${b}/`)) {
+        candidatePaths.push(cleanPath.slice(b.length + 1));
+      }
     }
   }
 
@@ -230,17 +269,14 @@ async function fetchFileFromSupabaseStorage(
     candidatePaths.push(fileName);
   }
 
-  // Remove duplicates and empty strings
   const uniquePaths = Array.from(new Set(candidatePaths.filter(Boolean)));
 
-  let lastStatus = 404;
-  let lastError = '';
-
-  for (const bucket of buckets) {
+  // Try direct fetch for each valid bucket and candidate path
+  for (const bucket of targetBuckets) {
     for (const p of uniquePaths) {
       const encodedPath = encodeURIComponent(p).replace(/%2F/g, '/');
 
-      // Method 1: Authenticated endpoint
+      // 1. Authenticated endpoint
       try {
         const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedPath}`;
         const res = await fetch(fetchUrl, {
@@ -257,47 +293,12 @@ async function fetchFileFromSupabaseStorage(
             const contentType = getMimeType(fileName || p, res.headers.get('content-type') || doc.mime_type);
             return { buffer, contentType, matchedBucket: bucket, matchedPath: p };
           }
-        } else {
-          lastStatus = res.status;
-          lastError = await res.text().catch(() => '');
         }
       } catch {
-        // Fall through
+        // Continue
       }
 
-      // Method 2: Signed URL download
-      try {
-        const signUrl = `${supabaseUrl}/storage/v1/object/sign/${bucket}/${encodedPath}`;
-        const signRes = await fetch(signUrl, {
-          method: 'POST',
-          headers: {
-            apikey: supabaseServiceKey,
-            Authorization: `Bearer ${supabaseServiceKey}`,
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ expiresIn: 3600 }),
-        });
-
-        if (signRes.ok) {
-          const signData: any = await signRes.json().catch(() => ({}));
-          if (signData?.signedURL) {
-            const fullSignedUrl = `${supabaseUrl}/storage/v1${signData.signedURL}`;
-            const downloadRes = await fetch(fullSignedUrl);
-            if (downloadRes.ok) {
-              const arrayBuf = await downloadRes.arrayBuffer();
-              if (arrayBuf.byteLength > 0) {
-                const buffer = Buffer.from(arrayBuf);
-                const contentType = getMimeType(fileName || p, downloadRes.headers.get('content-type') || doc.mime_type);
-                return { buffer, contentType, matchedBucket: bucket, matchedPath: p };
-              }
-            }
-          }
-        }
-      } catch {
-        // Fall through
-      }
-
-      // Method 3: Direct object URL
+      // 2. Direct object endpoint
       try {
         const directUrl = `${supabaseUrl}/storage/v1/object/${bucket}/${encodedPath}`;
         const directRes = await fetch(directUrl, {
@@ -316,14 +317,75 @@ async function fetchFileFromSupabaseStorage(
           }
         }
       } catch {
-        // Fall through
+        // Continue
       }
     }
   }
 
-  throw new Error(
-    `Storage binary not found in private bucket for "${fileName || cleanPath}" (HTTP ${lastStatus}). Path tried: ${cleanPath || 'none'}. ${lastError ? `[Details: ${lastError.slice(0, 150)}]` : ''}`
-  );
+  // 3. Deep search inside bucket objects (listing by prefix or search)
+  for (const bucket of targetBuckets) {
+    try {
+      const prefixesToTry = [
+        doc.onboarding_id ? `${doc.onboarding_id}/${doc.category || ''}` : '',
+        doc.onboarding_id || '',
+        '',
+      ];
+
+      for (const prefix of prefixesToTry) {
+        const listRes = await fetch(`${supabaseUrl}/storage/v1/object/list/${bucket}`, {
+          method: 'POST',
+          headers: {
+            apikey: supabaseServiceKey,
+            Authorization: `Bearer ${supabaseServiceKey}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            prefix,
+            limit: 100,
+            search: fileName || undefined,
+          }),
+        });
+
+        if (listRes.ok) {
+          const items: any = await listRes.json().catch(() => []);
+          if (Array.isArray(items)) {
+            // Find item matching file name
+            const match = items.find((item: any) => {
+              const itemName = (item.name || '').toLowerCase();
+              const targetName = (fileName || '').toLowerCase();
+              return itemName === targetName || itemName.endsWith(`_${targetName}`) || itemName.includes(targetName);
+            });
+
+            if (match) {
+              const fullObjectPath = prefix ? `${prefix.replace(/\/+$/, '')}/${match.name}` : match.name;
+              const encodedMatchedPath = encodeURIComponent(fullObjectPath).replace(/%2F/g, '/');
+              const fetchUrl = `${supabaseUrl}/storage/v1/object/authenticated/${bucket}/${encodedMatchedPath}`;
+              const res = await fetch(fetchUrl, {
+                headers: {
+                  apikey: supabaseServiceKey,
+                  Authorization: `Bearer ${supabaseServiceKey}`,
+                },
+              });
+
+              if (res.ok) {
+                const arrayBuf = await res.arrayBuffer();
+                if (arrayBuf.byteLength > 0) {
+                  const buffer = Buffer.from(arrayBuf);
+                  const contentType = getMimeType(fileName || match.name, res.headers.get('content-type') || doc.mime_type);
+                  return { buffer, contentType, matchedBucket: bucket, matchedPath: fullObjectPath };
+                }
+              }
+            }
+          }
+        }
+      }
+    } catch {
+      // Continue
+    }
+  }
+
+  // If not found in any real bucket after deep search:
+  throw new Error(`Source file is missing from Supabase Storage (path: "${cleanPath || fileName}").`);
 }
 
 // ----------------------------------------------------------------------------
