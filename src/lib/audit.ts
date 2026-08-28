@@ -30,9 +30,12 @@ export type AuditAction =
   | 'password_reset_initiated'
   | 'password_reset_completed'
   | 'password_changed_own'
-  | 'profile_updated';
+  | 'profile_updated'
+  | 'meta_asset_updated'
+  | 'meta_asset_created'
+  | 'meta_asset_deleted';
 
-export type EntityType = 'onboarding' | 'document' | 'employee' | 'credential' | 'auth' | 'system';
+export type EntityType = 'onboarding' | 'document' | 'employee' | 'credential' | 'auth' | 'system' | 'meta_asset';
 
 /**
  * Log an audit event.
