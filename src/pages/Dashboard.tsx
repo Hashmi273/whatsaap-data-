@@ -7,14 +7,16 @@ import {
   XCircle,
   Activity,
   PlusCircle,
-  Upload,
   Search,
   Users,
   ShieldCheck,
   FileText,
   TrendingUp,
   FolderLock,
-  Radio
+  Radio,
+  ArrowRight,
+  Shield,
+  Briefcase
 } from 'lucide-react';
 import {
   PieChart,
@@ -27,19 +29,18 @@ import {
 import { useAuth } from '@/lib/auth';
 import { hasPermission } from '@/lib/permissions';
 import { supabase } from '@/lib/supabase';
+import { fetchDocumentMetadata } from '@/lib/storage';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { StatusBadge } from '@/components/shared/StatusBadge';
 import { formatCategoryLabel } from '@/types/database';
-import type { OnboardingRecord, OnboardingDocument } from '@/types/database';
-import { format } from 'date-fns';
-
-import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData';
+import type { OnboardingRecord, OnboardingDocument, AuditLog, Profile } from '@/types/database';
+import { format, formatDistanceToNow } from 'date-fns';
 
 export function Dashboard() {
   const { profile } = useAuth();
   const navigate = useNavigate();
 
-  // Get current greeting based on time of day
+  // Greeting based on time of day
   const getGreeting = () => {
     const hour = new Date().getHours();
     if (hour < 12) return 'Good Morning';
@@ -57,11 +58,9 @@ export function Dashboard() {
           return rpcData[0];
         }
 
-        const { data: records, error } = await supabase
-          .from('onboarding_records')
-          .select('status');
-
-        if (!error && records && records.length > 0) {
+        const res = await fetchDocumentMetadata('onboarding_records', 'status');
+        if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+          const records = res.data;
           return {
             total: records.length,
             pending: records.filter((r) => r.status === 'pending').length,
@@ -75,51 +74,79 @@ export function Dashboard() {
         // Fallback
       }
 
-      // Default zero stats for clean dashboard
       return { total: 0, pending: 0, in_progress: 0, live: 0, completed: 0, rejected: 0 };
     },
   });
 
   // Fetch recent onboarding records
-  const { data: recentOnboardings, isLoading: onboardingsLoading } = useQuery({
+  const { data: recentOnboardings = [], isLoading: onboardingsLoading } = useQuery({
     queryKey: ['recent-onboardings'],
     queryFn: async () => {
-      try {
-        const { data, error } = await supabase
-          .from('onboarding_records')
-          .select('id, brand_name, whatsapp_number, status, onboarding_date, created_at')
-          .order('created_at', { ascending: false })
-          .limit(5);
-
-        if (!error && data && data.length > 0) return data as OnboardingRecord[];
-      } catch {
-        // Fallback
+      const res = await fetchDocumentMetadata('onboarding_records', '*', {
+        order: { column: 'created_at', ascending: false },
+        limit: 5,
+      });
+      if (res.success && Array.isArray(res.data)) {
+        return res.data as OnboardingRecord[];
       }
-      return INITIAL_DEMO_ONBOARDINGS.slice(0, 5);
+      return [];
     },
   });
 
   // Fetch recent documents
-  const { data: recentDocuments, isLoading: documentsLoading } = useQuery({
+  const { data: recentDocuments = [], isLoading: documentsLoading } = useQuery({
     queryKey: ['recent-documents'],
     queryFn: async () => {
-      try {
-        const { data, error } = await supabase
-          .from('onboarding_documents')
-          .select(`
-            id, file_name, category, created_at, onboarding_id,
-            onboarding:onboarding_records(brand_name)
-          `)
-          .order('created_at', { ascending: false })
-          .limit(5);
-
-        if (!error && data && data.length > 0) {
-          return data as unknown as (OnboardingDocument & { onboarding: { brand_name: string } })[];
-        }
-      } catch {
-        // Fallback
+      const res = await fetchDocumentMetadata('onboarding_documents', '*', {
+        order: { column: 'created_at', ascending: false },
+        limit: 5,
+      });
+      if (res.success && Array.isArray(res.data)) {
+        return res.data as OnboardingDocument[];
       }
-      return INITIAL_DEMO_DOCUMENTS.slice(0, 5) as unknown as (OnboardingDocument & { onboarding: { brand_name: string } })[];
+      return [];
+    },
+  });
+
+  // Fetch recent activity audit logs
+  const { data: recentActivity = [] } = useQuery({
+    queryKey: ['recent-audit-logs'],
+    queryFn: async () => {
+      const res = await fetchDocumentMetadata('audit_logs', '*', {
+        order: { column: 'created_at', ascending: false },
+        limit: 5,
+      });
+      if (res.success && Array.isArray(res.data)) {
+        return res.data as AuditLog[];
+      }
+      return [];
+    },
+  });
+
+  // Fetch team workload
+  const { data: teamWorkload = [] } = useQuery({
+    queryKey: ['team-workload'],
+    queryFn: async () => {
+      const [profilesRes, recordsRes] = await Promise.all([
+        supabase.from('profiles').select('id, full_name, role, department').eq('is_active', true),
+        fetchDocumentMetadata('onboarding_records', 'assigned_to, status'),
+      ]);
+
+      const staff = profilesRes.data || [];
+      const records = (recordsRes.success && Array.isArray(recordsRes.data)) ? recordsRes.data : [];
+
+      return staff.map((member: any) => {
+        const assignedRecords = records.filter((r: any) => r.assigned_to === member.id);
+        const liveCount = assignedRecords.filter((r: any) => r.status === 'live' || r.status === 'completed').length;
+        return {
+          id: member.id,
+          name: member.full_name,
+          role: member.role,
+          total: assignedRecords.length,
+          live: liveCount,
+          pending: assignedRecords.length - liveCount,
+        };
+      }).filter((w: any) => w.total > 0).sort((a: any, b: any) => b.total - a.total);
     },
   });
 
@@ -143,13 +170,13 @@ export function Dashboard() {
             <div>
               <div className="flex items-center gap-2 text-blue-200 text-xs font-semibold uppercase tracking-wider mb-1">
                 <ShieldCheck className="w-4 h-4 text-emerald-400" />
-                Enterprise WhatsApp Operations
+                Enterprise WhatsApp & Meta Management
               </div>
               <h2 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
                 {getGreeting()}, {profile?.full_name || 'Team Member'}
               </h2>
               <p className="mt-1 text-sm text-blue-100/90 max-w-xl">
-                Manage WhatsApp Business onboarding, track brand credentials, and securely verify GST/KYC compliance.
+                Manage WhatsApp Business onboarding, Meta Portfolio verification, WABA accounts, and compliance documents.
               </p>
             </div>
 
@@ -162,7 +189,7 @@ export function Dashboard() {
                     className="inline-flex items-center gap-2 px-4 py-2.5 bg-white text-[#071A3D] font-bold text-xs rounded-xl shadow-xs hover:bg-blue-50 transition-colors cursor-pointer"
                   >
                     <PlusCircle className="w-4 h-4 text-[#1677FF]" />
-                    WhatsApp
+                    New WhatsApp Client
                   </button>
                   <button
                     onClick={() => navigate('/rcs/new')}
@@ -178,7 +205,7 @@ export function Dashboard() {
                 className="inline-flex items-center gap-2 px-4 py-2.5 bg-white/10 hover:bg-white/20 text-white font-medium text-xs rounded-xl border border-white/20 transition-colors backdrop-blur-xs cursor-pointer"
               >
                 <Search className="w-4 h-4 text-blue-300" />
-                Find GST / Docs
+                Search Vault
               </button>
             </div>
           </div>
@@ -307,11 +334,11 @@ export function Dashboard() {
                 </div>
                 <h4 className="font-bold text-gray-900 text-sm">WhatsApp Onboardings</h4>
                 <p className="text-xs text-gray-500 mt-1">
-                  View complete client roster, WhatsApp numbers, platform URLs, and assigned teams.
+                  Manage client accounts, Meta Portfolios, WABA accounts, and active WhatsApp numbers.
                 </p>
               </div>
-              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-block">
-                View Directory →
+              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-flex items-center gap-1">
+                View Directory <ArrowRight className="w-3 h-3" />
               </span>
             </div>
 
@@ -328,8 +355,8 @@ export function Dashboard() {
                   Access brand GST certificates, PAN cards, WhatsApp authorization letters, and agreements.
                 </p>
               </div>
-              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-block">
-                Open Vault →
+              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-flex items-center gap-1">
+                Open Vault <ArrowRight className="w-3 h-3" />
               </span>
             </div>
 
@@ -343,152 +370,144 @@ export function Dashboard() {
                 </div>
                 <h4 className="font-bold text-gray-900 text-sm">Instant Document Search</h4>
                 <p className="text-xs text-gray-500 mt-1">
-                  Search any brand (e.g. "Prestige") to retrieve GST certificates with signed downloads.
+                  Quick search across all client documents with instant download and preview capabilities.
                 </p>
               </div>
-              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-block">
-                Search Compliance Docs →
+              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-flex items-center gap-1">
+                Search Compliance Docs <ArrowRight className="w-3 h-3" />
               </span>
             </div>
 
-            {profile?.role === 'super_admin' ? (
-              <div
-                onClick={() => navigate('/team')}
-                className="p-5 bg-white rounded-2xl border border-gray-200 shadow-xs hover:border-blue-400 hover:shadow-md transition-all cursor-pointer group flex flex-col justify-between"
-              >
-                <div>
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1677FF] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-                    <Users className="w-5 h-5" />
-                  </div>
-                  <h4 className="font-bold text-gray-900 text-sm">Team & Role Access</h4>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Manage corporate staff roles, deactivate exiting employees, and reassign clients safely.
-                  </p>
+            <div
+              onClick={() => navigate(hasPermission(profile?.role, 'employee:manage') ? '/team' : '/activity')}
+              className="p-5 bg-white rounded-2xl border border-gray-200 shadow-xs hover:border-blue-400 hover:shadow-md transition-all cursor-pointer group flex flex-col justify-between"
+            >
+              <div>
+                <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1677FF] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
+                  <Users className="w-5 h-5" />
                 </div>
-                <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-block">
-                  Manage Access →
-                </span>
+                <h4 className="font-bold text-gray-900 text-sm">Team & Operations</h4>
+                <p className="text-xs text-gray-500 mt-1">
+                  Track employee workload, audit trails, permission matrices, and account reassignments.
+                </p>
               </div>
-            ) : (
-              <div
-                onClick={() => navigate('/activity')}
-                className="p-5 bg-white rounded-2xl border border-gray-200 shadow-xs hover:border-blue-400 hover:shadow-md transition-all cursor-pointer group flex flex-col justify-between"
-              >
-                <div>
-                  <div className="w-10 h-10 rounded-xl bg-blue-50 text-[#1677FF] flex items-center justify-center mb-3 group-hover:scale-105 transition-transform">
-                    <Activity className="w-5 h-5" />
-                  </div>
-                  <h4 className="font-bold text-gray-900 text-sm">Activity & Audit Trail</h4>
-                  <p className="text-xs text-gray-500 mt-1">
-                    Track all credential copies, uploads, and record status modifications.
-                  </p>
-                </div>
-                <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-block">
-                  View Logs →
-                </span>
-              </div>
-            )}
+              <span className="text-xs font-semibold text-[#1677FF] mt-4 inline-flex items-center gap-1">
+                Manage Operations <ArrowRight className="w-3 h-3" />
+              </span>
+            </div>
           </div>
         </div>
 
-        {/* Recent Data Tables Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {/* Recent Onboardings */}
-          <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-gray-900">Recent Onboardings</h3>
+        {/* Bottom Split Row: Recent Onboardings, Team Workload & Activity */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Recent Onboardings (Col 1-2) */}
+          <div className="lg:col-span-2 bg-white rounded-2xl border border-gray-200 shadow-xs overflow-hidden">
+            <div className="p-5 border-b border-gray-100 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-gray-900">Recent Client Onboardings</h3>
+                <p className="text-xs text-gray-500">Latest WhatsApp Business accounts submitted</p>
+              </div>
               <button
                 onClick={() => navigate('/onboarding')}
-                className="text-xs font-semibold text-[#1677FF] hover:underline"
+                className="text-xs font-semibold text-[#1677FF] hover:underline inline-flex items-center gap-1"
               >
-                View All
+                View All <ArrowRight className="w-3 h-3" />
               </button>
             </div>
 
-            {onboardingsLoading ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-12 bg-gray-100 rounded-lg animate-pulse" />
-                ))}
-              </div>
-            ) : recentOnboardings && recentOnboardings.length > 0 ? (
-              <div className="divide-y divide-gray-100">
-                {recentOnboardings.map((item) => (
+            <div className="divide-y divide-gray-100">
+              {recentOnboardings.length === 0 ? (
+                <div className="p-8 text-center text-xs text-gray-400">
+                  No recent onboarding records found.
+                </div>
+              ) : (
+                recentOnboardings.map((rec) => (
                   <div
-                    key={item.id}
-                    onClick={() => navigate(`/onboarding/${item.id}`)}
-                    className="py-3 flex items-center justify-between hover:bg-gray-50 px-2 rounded-lg transition-colors cursor-pointer"
+                    key={rec.id}
+                    onClick={() => navigate(`/onboarding/${rec.id}`)}
+                    className="p-4 hover:bg-gray-50/80 transition-colors flex items-center justify-between cursor-pointer"
                   >
-                    <div>
-                      <p className="text-sm font-semibold text-gray-900">{item.brand_name}</p>
-                      <p className="text-xs text-gray-500">{item.whatsapp_number}</p>
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-lg bg-blue-50 text-[#1677FF] font-bold text-sm flex items-center justify-center flex-shrink-0">
+                        {rec.brand_name.charAt(0).toUpperCase()}
+                      </div>
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-gray-900 truncate hover:text-[#1677FF]">
+                          {rec.brand_name}
+                        </p>
+                        <p className="text-xs text-gray-500 font-mono">
+                          {rec.whatsapp_number}
+                        </p>
+                      </div>
                     </div>
+
                     <div className="flex items-center gap-3">
-                      <StatusBadge status={item.status} size="sm" />
-                      <span className="text-xs text-gray-400">
-                        {item.onboarding_date ? format(new Date(item.onboarding_date), 'dd MMM') : '-'}
+                      <StatusBadge status={rec.status} />
+                      <span className="text-xs text-gray-400 hidden sm:inline">
+                        {rec.created_at ? format(new Date(rec.created_at), 'dd MMM yyyy') : ''}
                       </span>
                     </div>
                   </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-xs text-gray-400">
-                No recent onboarding records found.
-              </div>
-            )}
+                ))
+              )}
+            </div>
           </div>
 
-          {/* Recent Documents */}
-          <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs">
-            <div className="flex items-center justify-between mb-4">
-              <h3 className="text-base font-bold text-gray-900">Recently Uploaded Documents</h3>
-              <button
-                onClick={() => navigate('/documents')}
-                className="text-xs font-semibold text-[#1677FF] hover:underline"
-              >
-                Vault
-              </button>
-            </div>
-
-            {documentsLoading ? (
-              <div className="space-y-3">
-                {[1, 2, 3].map((i) => (
-                  <div key={i} className="h-12 bg-gray-100 rounded-lg animate-pulse" />
-                ))}
-              </div>
-            ) : recentDocuments && recentDocuments.length > 0 ? (
-              <div className="divide-y divide-gray-100">
-                {recentDocuments.map((doc) => (
-                  <div
-                    key={doc.id}
-                    onClick={() => navigate(`/onboarding/${doc.onboarding_id}`)}
-                    className="py-3 flex items-center justify-between hover:bg-gray-50 px-2 rounded-lg transition-colors cursor-pointer"
-                  >
-                    <div className="flex items-center gap-3 min-w-0">
-                      <div className="p-2 rounded-lg bg-blue-50 text-blue-600 flex-shrink-0">
-                        <FileText className="w-4 h-4" />
+          {/* Team Workload & Activity (Col 3) */}
+          <div className="space-y-6">
+            {/* Team Workload */}
+            {teamWorkload.length > 0 && (
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-xs p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="text-sm font-bold text-gray-900">Team Workload</h3>
+                  <span className="text-[11px] text-gray-400">{teamWorkload.length} Active Staff</span>
+                </div>
+                <div className="space-y-3">
+                  {teamWorkload.slice(0, 4).map((w: any) => (
+                    <div key={w.id} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="font-semibold text-gray-800">{w.name}</span>
+                        <span className="text-gray-500">{w.total} clients ({w.live} live)</span>
                       </div>
-                      <div className="min-w-0">
-                        <p className="text-sm font-semibold text-gray-900 truncate">
-                          {doc.file_name}
-                        </p>
-                        <p className="text-xs text-gray-500">
-                          {doc.onboarding?.brand_name || 'Brand'} • {formatCategoryLabel(doc.category)}
-                        </p>
+                      <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-[#1677FF] rounded-full"
+                          style={{ width: `${Math.min((w.total / (stats?.total || 1)) * 100, 100)}%` }}
+                        />
                       </div>
                     </div>
-                    <span className="text-xs text-gray-400 flex-shrink-0 ml-2">
-                      {format(new Date(doc.created_at), 'dd MMM')}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            ) : (
-              <div className="py-8 text-center text-xs text-gray-400">
-                No recent documents uploaded yet.
+                  ))}
+                </div>
               </div>
             )}
+
+            {/* Recent Documents */}
+            <div className="bg-white rounded-2xl border border-gray-200 shadow-xs p-5">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-sm font-bold text-gray-900">Recent Vault Documents</h3>
+                <button
+                  onClick={() => navigate('/documents')}
+                  className="text-xs font-semibold text-[#1677FF] hover:underline"
+                >
+                  Vault →
+                </button>
+              </div>
+              <div className="space-y-2.5">
+                {recentDocuments.length === 0 ? (
+                  <p className="text-xs text-gray-400 text-center py-4">No documents uploaded yet.</p>
+                ) : (
+                  recentDocuments.slice(0, 4).map((doc) => (
+                    <div key={doc.id} className="flex items-center gap-2.5 text-xs">
+                      <FileText className="w-4 h-4 text-blue-500 flex-shrink-0" />
+                      <div className="min-w-0 flex-1">
+                        <p className="font-medium text-gray-800 truncate">{doc.file_name}</p>
+                        <p className="text-[10px] text-gray-400">{formatCategoryLabel(doc.category)}</p>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
           </div>
         </div>
       </div>

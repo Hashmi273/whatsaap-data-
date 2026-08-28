@@ -174,6 +174,9 @@ const ALLOWED_TABLES = new Set([
   'onboarding_records',
   'audit_logs',
   'profiles',
+  'meta_business_portfolios',
+  'waba_accounts',
+  'phone_numbers',
 ]);
 
 export default async function handler(req: IncomingMessage & { body?: any }, res: ServerResponse) {

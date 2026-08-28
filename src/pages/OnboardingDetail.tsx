@@ -1,70 +1,47 @@
-import { useState, useRef } from 'react';
+import { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import {
   ArrowLeft,
   Building2,
   Phone,
-  Mail,
-  User,
-  Shield,
-  KeyRound,
-  Eye,
-  EyeOff,
-  Copy,
-  Check,
-  FolderLock,
-  UploadCloud,
-  FileText,
-  Download,
-  Trash2,
   Clock,
   Edit,
-  ExternalLink,
-  AlertTriangle,
-  FileCheck2,
-  FileSpreadsheet,
-  FileImage,
+  FolderLock,
   ScrollText,
-  UserCheck,
-  RefreshCw,
-  HardDrive,
-  FolderSync,
-  RotateCw,
-  CheckCircle2
+  KeyRound,
+  Briefcase,
+  Smartphone,
+  CheckCircle2,
+  TrendingUp,
+  AlertCircle
 } from 'lucide-react';
 import { useAuth } from '@/lib/auth';
 import { supabase } from '@/lib/supabase';
 import { PageLayout } from '@/components/layout/PageLayout';
 import { StatusBadge } from '@/components/shared/StatusBadge';
-import { ConfirmDialog } from '@/components/shared/ConfirmDialog';
-import { EmptyState } from '@/components/shared/EmptyState';
-import { DocumentPreviewModal } from '@/components/documents/DocumentPreviewModal';
-import { logAudit, logCredentialView, logCredentialCopy } from '@/lib/audit';
+import { logAudit } from '@/lib/audit';
 import { useToast } from '@/lib/toast';
 import { hasPermission } from '@/lib/permissions';
-import { isValidUuid } from '@/lib/constants';
-import { downloadDocument } from '@/lib/download';
-import { downloadClientBackupZip } from '@/lib/zipBackup';
-import { uploadDocumentToStorage, saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
-import {
-  CATEGORY_OPTIONS,
-  STATUS_OPTIONS,
-  formatCategoryLabel,
-  ALLOWED_FILE_TYPES,
-  MAX_FILE_SIZE
-} from '@/types/database';
+import { saveDocumentMetadata, fetchDocumentMetadata } from '@/lib/storage';
+import { STATUS_OPTIONS, formatStatusLabel } from '@/types/database';
 import type {
   OnboardingRecord,
   OnboardingDocument,
-  DocumentCategory,
   OnboardingStatus,
-  Profile,
-  AuditLog
+  Profile
 } from '@/types/database';
-import { format, formatDistanceToNow } from 'date-fns';
 
-import { INITIAL_DEMO_ONBOARDINGS, INITIAL_DEMO_DOCUMENTS } from '@/lib/demoData';
+// Tab Components
+import { ClientOverviewTab } from '@/components/client-detail/ClientOverviewTab';
+import { MetaBusinessTab } from '@/components/client-detail/MetaBusinessTab';
+import { WabaTab } from '@/components/client-detail/WabaTab';
+import { PhoneNumbersTab } from '@/components/client-detail/PhoneNumbersTab';
+import { DocumentsTab } from '@/components/client-detail/DocumentsTab';
+import { CredentialsTab } from '@/components/client-detail/CredentialsTab';
+import { ActivityTab } from '@/components/client-detail/ActivityTab';
+
+type TabKey = 'overview' | 'meta' | 'waba' | 'phones' | 'documents' | 'credentials' | 'activity';
 
 export function OnboardingDetail() {
   const { id } = useParams<{ id: string }>();
@@ -73,32 +50,37 @@ export function OnboardingDetail() {
   const toast = useToast();
   const queryClient = useQueryClient();
 
-  // Credential state
-  const [showPassword, setShowPassword] = useState(false);
-  const [decryptedPassword, setDecryptedPassword] = useState<string | null>(null);
-  const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabKey>('overview');
 
-  // Document Upload state
-  const [uploadCategory, setUploadCategory] = useState<DocumentCategory>('gst_certificate');
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isUploading, setIsUploading] = useState(false);
-
-  // Document Preview / Delete / Replace state
-  const [previewDoc, setPreviewDoc] = useState<OnboardingDocument | null>(null);
-  const [previewSignedUrl, setPreviewSignedUrl] = useState<string | null>(null);
-  const [deleteDoc, setDeleteDoc] = useState<OnboardingDocument | null>(null);
-  const [replaceTargetDoc, setReplaceTargetDoc] = useState<OnboardingDocument | null>(null);
-  const replaceDocInputRef = useRef<HTMLInputElement>(null);
-
-  // Reassignment state
-  const [reassignModalOpen, setReassignModalOpen] = useState(false);
-  const [selectedNewAssignee, setSelectedNewAssignee] = useState<string>('');
+  // Safe date helper
+  const formatDateSafe = (dateStr?: string | null) => {
+    if (!dateStr) return '—';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' });
+    } catch {
+      return dateStr;
+    }
+  };
 
   // Fetch Onboarding Record
   const { data: record, isLoading: recordLoading } = useQuery({
     queryKey: ['onboarding-detail', id],
     queryFn: async () => {
       if (!id) throw new Error('No record ID provided');
+
+      // 1. Primary secure fetch through authenticated serverless metadata API
+      try {
+        const res = await fetchDocumentMetadata('onboarding_records', '*', { match: { id } });
+        if (res.success && Array.isArray(res.data) && res.data.length > 0) {
+          return res.data[0] as OnboardingRecord;
+        }
+      } catch (e) {
+        console.warn('Metadata API fetch error:', e);
+      }
+
+      // 2. Direct Supabase client fallback
       try {
         const { data, error } = await supabase
           .from('onboarding_records')
@@ -120,137 +102,87 @@ export function OnboardingDetail() {
         // Fallback
       }
 
-      // Check local custom onboardings first if match
+      // 3. Check local storage
       try {
         const localCustom = JSON.parse(localStorage.getItem('immense_custom_onboardings') || '[]');
         const localMatch = localCustom.find((r: any) => r.id === id);
-        if (localMatch) {
-          return {
-            ...localMatch,
-            assigned_profile: {
-              id: 'immense-employee-003',
-              full_name: 'Support Executive',
-              corporate_email: 'employee@immensesmartsolutions.com',
-              role: 'employee',
-              department: 'Client Success',
-              is_active: true,
-              avatar_url: null,
-              last_login: null,
-              created_at: '',
-              updated_at: '',
-            },
-            creator_profile: {
-              id: 'immense-admin-001',
-              full_name: 'Immense Super Admin',
-              corporate_email: 'support@immensesmartsolutions.com',
-              role: 'super_admin',
-              department: 'Executive Leadership',
-              is_active: true,
-              avatar_url: null,
-              last_login: null,
-              created_at: '',
-              updated_at: '',
-            },
-          } as unknown as OnboardingRecord & {
-            assigned_profile: Profile | null;
-            creator_profile: Profile | null;
-          };
-        }
+        if (localMatch) return localMatch;
       } catch {
         // Ignore
       }
 
-      // Find in demo data
-      const demoMatch = INITIAL_DEMO_ONBOARDINGS.find((r) => r.id === id) || INITIAL_DEMO_ONBOARDINGS[0];
-      return {
-        ...demoMatch,
-        assigned_profile: {
-          id: 'immense-employee-003',
-          full_name: 'Support Executive',
-          corporate_email: 'employee@immensesmartsolutions.com',
-          role: 'employee',
-          department: 'Client Success',
-          is_active: true,
-          avatar_url: null,
-          last_login: null,
-          created_at: '',
-          updated_at: '',
-        },
-        creator_profile: {
-          id: 'immense-admin-001',
-          full_name: 'Immense Super Admin',
-          corporate_email: 'support@immensesmartsolutions.com',
-          role: 'super_admin',
-          department: 'Executive Leadership',
-          is_active: true,
-          avatar_url: null,
-          last_login: null,
-          created_at: '',
-          updated_at: '',
-        },
-      } as unknown as OnboardingRecord & {
-        assigned_profile: Profile | null;
-        creator_profile: Profile | null;
-      };
+      return null;
     },
+    enabled: Boolean(id),
   });
 
-  // Fetch Documents in this record's vault
-  const { data: documents, isLoading: docsLoading } = useQuery({
+  // Fetch Documents
+  const { data: documents = [], refetch: refetchDocuments } = useQuery({
     queryKey: ['onboarding-documents', id],
     queryFn: async () => {
       if (!id) return [];
       try {
-        const res = await fetchDocumentMetadata('onboarding_documents', '*', { match: { onboarding_id: id }, order: { column: 'created_at', ascending: false } });
+        const res = await fetchDocumentMetadata('onboarding_documents', '*', {
+          match: { onboarding_id: id },
+          order: { column: 'created_at', ascending: false }
+        });
         if (res.success && Array.isArray(res.data)) {
-          return res.data as (OnboardingDocument & { uploader_profile: Profile | null })[];
+          return res.data as OnboardingDocument[];
         }
       } catch (err) {
         console.warn('Document fetch error:', err);
       }
-
-      return [] as (OnboardingDocument & { uploader_profile: Profile | null })[];
+      return [];
     },
+    enabled: Boolean(id),
   });
 
-  // Fetch Audit Trail for this record
-  const { data: auditLogs } = useQuery({
-    queryKey: ['onboarding-audit-logs', id],
-    queryFn: async () => {
-      if (!id) return [];
-      const { data, error } = await supabase
-        .from('audit_logs')
-        .select(`
-          *,
-          user_profile:profiles!audit_logs_user_id_fkey(full_name, corporate_email)
-        `)
-        .eq('entity_id', id)
-        .order('created_at', { ascending: false })
-        .limit(10);
-
-      if (error) return [];
-      return data as (AuditLog & { user_profile: Profile | null })[];
-    },
-  });
-
-  // Fetch Employees for reassignment dropdown
-  const { data: allEmployees } = useQuery({
+  // Fetch Staff List
+  const { data: staffList = [] } = useQuery({
     queryKey: ['profiles-employees'],
     queryFn: async () => {
-      const { data } = await supabase
-        .from('profiles')
-        .select('id, full_name, corporate_email, is_active')
-        .eq('is_active', true)
-        .order('full_name');
-      return (data || []) as Profile[];
+      try {
+        const { data } = await supabase
+          .from('profiles')
+          .select('id, full_name, corporate_email, is_active, department')
+          .eq('is_active', true)
+          .order('full_name');
+        return (data || []) as Profile[];
+      } catch {
+        return [];
+      }
     },
+  });
+
+  // Fetch related Meta Portfolio, WABA, Phone counts for progress calculation
+  const { data: entityCounts } = useQuery({
+    queryKey: ['client-entity-counts', id],
+    queryFn: async () => {
+      if (!id) return { meta: 0, waba: 0, phones: 0 };
+      const [metaRes, wabaRes, phoneRes] = await Promise.all([
+        fetchDocumentMetadata('meta_business_portfolios', 'id', { match: { client_id: id } }),
+        fetchDocumentMetadata('waba_accounts', 'id', { match: { client_id: id } }),
+        fetchDocumentMetadata('phone_numbers', 'id', { match: { client_id: id } }),
+      ]);
+      return {
+        meta: metaRes?.success && Array.isArray(metaRes.data) ? metaRes.data.length : 0,
+        waba: wabaRes?.success && Array.isArray(wabaRes.data) ? wabaRes.data.length : 0,
+        phones: phoneRes?.success && Array.isArray(phoneRes.data) ? phoneRes.data.length : 0,
+      };
+    },
+    enabled: Boolean(id),
   });
 
   // Change Status Mutation
   const statusMutation = useMutation({
     mutationFn: async (newStatus: OnboardingStatus) => {
       if (!id) return;
-      const res = await saveDocumentMetadata('onboarding_records', { status: newStatus, updated_at: new Date().toISOString() }, 'update', { id });
+      const res = await saveDocumentMetadata(
+        'onboarding_records',
+        { status: newStatus, updated_at: new Date().toISOString() },
+        'update',
+        { id }
+      );
       if (!res.success) throw new Error(res.error || 'Failed to update record status.');
 
       await logAudit('record_edited', 'onboarding', id, {
@@ -259,7 +191,7 @@ export function OnboardingDetail() {
       });
     },
     onSuccess: (_, newStatus) => {
-      toast.success('Status Updated', `Record status changed to ${formatCategoryLabel(newStatus as any)}`);
+      toast.success('Status Updated', `Record status changed to ${formatStatusLabel(newStatus)}`);
       queryClient.invalidateQueries({ queryKey: ['onboarding-detail', id] });
       queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
       queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
@@ -273,7 +205,12 @@ export function OnboardingDetail() {
   const reassignMutation = useMutation({
     mutationFn: async (newAssigneeId: string) => {
       if (!id) return;
-      const res = await saveDocumentMetadata('onboarding_records', { assigned_to: newAssigneeId || null, updated_at: new Date().toISOString() }, 'update', { id });
+      const res = await saveDocumentMetadata(
+        'onboarding_records',
+        { assigned_to: newAssigneeId || null, updated_at: new Date().toISOString() },
+        'update',
+        { id }
+      );
       if (!res.success) throw new Error(res.error || 'Failed to reassign record.');
 
       await logAudit('assignment_changed', 'onboarding', id, {
@@ -285,339 +222,31 @@ export function OnboardingDetail() {
       toast.success('Employee Assigned', 'Onboarding responsibility was updated.');
       queryClient.invalidateQueries({ queryKey: ['onboarding-detail', id] });
       queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
-      setReassignModalOpen(false);
     },
     onError: (err: any) => {
       toast.error('Reassignment Failed', err.message);
     },
   });
 
-  // Reveal Password (Audited)
-  const handleTogglePassword = async () => {
-    if (showPassword) {
-      setShowPassword(false);
-      return;
-    }
-
-    if (!id) return;
-
-    try {
-      // First attempt server RPC
-      const { data: rpcData, error: rpcError } = await supabase.rpc('get_credential', {
-        record_id: id,
-      });
-
-      if (!rpcError && rpcData && rpcData.length > 0) {
-        setDecryptedPassword(rpcData[0].credential);
-      } else {
-        // Fallback: If pgcrypto is not configured in DB yet, read stored secret
-        setDecryptedPassword(record?.credential_encrypted || '••••••••');
-        await logCredentialView(id);
-      }
-
-      setShowPassword(true);
-      queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
-      toast.info('Credential Accessed', 'Credential viewing event was logged to compliance audit.');
-    } catch (err: any) {
-      toast.error('Credential Decryption Error', err.message);
-    }
+  // Calculate Onboarding Completion Percentage safely
+  const calculateProgress = () => {
+    let score = 20; // Client base record created
+    if (record?.credential_encrypted) score += 15;
+    if (Array.isArray(documents) && documents.length > 0) score += 20;
+    if (entityCounts?.meta && entityCounts.meta > 0) score += 15;
+    if (entityCounts?.waba && entityCounts.waba > 0) score += 15;
+    if (entityCounts?.phones && entityCounts.phones > 0) score += 15;
+    return Math.min(score, 100);
   };
 
-  // Copy field with audit
-  const handleCopy = async (text: string, fieldName: string) => {
-    if (!text) return;
-    await navigator.clipboard.writeText(text);
-    setCopiedField(fieldName);
-    setTimeout(() => setCopiedField(null), 2000);
-
-    if (fieldName === 'password' && id) {
-      await logCredentialCopy(id);
-      queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
-    }
-
-    toast.success('Copied to Clipboard', `${fieldName} copied.`);
-  };
-
-  // Document Upload
-  const handleUploadDocument = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!selectedFile || !id || isUploading) return;
-
-    // Strict file type validation: PDF, JPG, JPEG, PNG, DOCX, DOC
-    const fileNameLower = selectedFile.name.toLowerCase();
-    const isAllowedExt =
-      fileNameLower.endsWith('.pdf') ||
-      fileNameLower.endsWith('.jpg') ||
-      fileNameLower.endsWith('.jpeg') ||
-      fileNameLower.endsWith('.png') ||
-      fileNameLower.endsWith('.docx') ||
-      fileNameLower.endsWith('.doc');
-
-    if (!isAllowedExt) {
-      toast.error('Unsupported Document Type', 'Only PDF, JPG, PNG, and DOCX documents are allowed in the vault.');
-      return;
-    }
-
-    if (selectedFile.size > MAX_FILE_SIZE) {
-      toast.error('File Too Large', 'Maximum file size allowed is 10MB.');
-      return;
-    }
-
-    setIsUploading(true);
-
-    try {
-      const sanitizedName = selectedFile.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
-      const storagePath = `${id}/${uploadCategory}/${uniqueFileName}`;
-      const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
-
-      // 1. Upload to Supabase Storage (Client + Serverless fallback)
-      const uploadResult = await uploadDocumentToStorage(storagePath, selectedFile, 'onboarding-documents');
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || 'Storage upload failed — physical object could not be vaulted.');
-      }
-
-      // 2. Insert metadata record in onboarding_documents ONLY after storage succeeded
-      const docPayload: any = {
-        id: crypto.randomUUID(),
-        onboarding_id: id,
-        file_name: selectedFile.name,
-        original_name: selectedFile.name,
-        category: uploadCategory,
-        storage_path: storagePath,
-        mime_type: selectedFile.type || (fileNameLower.endsWith('.pdf') ? 'application/pdf' : 'image/png'),
-        file_size: selectedFile.size,
-      };
-
-      if (uploaderId) {
-        docPayload.uploaded_by = uploaderId;
-      }
-
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'upsert');
-      if (!saveRes.success) {
-        throw new Error(`Database record failed: ${saveRes.error}`);
-      }
-
-      // 3. Log Audit
-      await logAudit('document_uploaded', 'document', id, {
-        file_name: selectedFile.name,
-        category: uploadCategory,
-        size_bytes: selectedFile.size,
-      });
-
-      toast.success('Document Vaulted', `${selectedFile.name} successfully encrypted & stored.`);
-      setSelectedFile(null);
-      queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
-      queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
-      queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
-      queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
-    } catch (err: any) {
-      console.error('Upload error:', err);
-      toast.error('Upload Failed', err.message || 'Could not upload document.');
-    } finally {
-      setIsUploading(false);
-    }
-  };
-
-  // Generate Fresh Signed URL or Authenticated Stream for Preview
-  const handlePreview = async (doc: OnboardingDocument) => {
-    setPreviewDoc(doc);
-    if (!doc.storage_path) {
-      setPreviewSignedUrl(null);
-      return;
-    }
-
-    try {
-      // 1. Generate fresh signed URL from Supabase client
-      const { data: signData, error: signErr } = await supabase.storage
-        .from('onboarding-documents')
-        .createSignedUrl(doc.storage_path, 3600);
-
-      if (!signErr && signData?.signedUrl) {
-        setPreviewSignedUrl(signData.signedUrl);
-        return;
-      }
-
-      // 2. Direct binary download via client session
-      const { data: blobData, error: downloadErr } = await supabase.storage
-        .from('onboarding-documents')
-        .download(doc.storage_path);
-
-      if (!downloadErr && blobData && blobData.size > 0) {
-        const blobUrl = URL.createObjectURL(blobData);
-        setPreviewSignedUrl(blobUrl);
-        return;
-      }
-
-      // 3. Fallback to serverless stream
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
-    } catch {
-      const streamUrl = `/api/download-document?path=${encodeURIComponent(doc.storage_path)}&name=${encodeURIComponent(doc.file_name)}&disposition=inline`;
-      setPreviewSignedUrl(streamUrl);
-    }
-  };
-
-  const [downloadingDocId, setDownloadingDocId] = useState<string | null>(null);
-  const [isBackingUp, setIsBackingUp] = useState(false);
-
-  // Trigger Google Drive Disaster Recovery Backup
-  const handleTriggerBackup = async () => {
-    if (!record) return;
-    setIsBackingUp(true);
-    toast.info('Google Drive Backup', `Backing up ${record.brand_name} to IMMENSE BACKUP/WhatsApp/${record.company_name || record.brand_name}...`);
-
-    try {
-      const res = await fetch('/api/google-drive-backup', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          recordId: record.id,
-          platform: 'WhatsApp',
-          companyName: record.company_name || record.brand_name,
-          documents: documents || [],
-        }),
-      });
-      const data = await res.json();
-      if (data.success) {
-        toast.success('Backup Complete', `Successfully archived in Google Drive (parvejweb1@gmail.com).`);
-        queryClient.invalidateQueries({ queryKey: ['onboarding-detail', id] });
-      } else {
-        toast.error('Backup Error', data.error || 'Google Drive backup failed. Please retry.');
-      }
-    } catch (err: any) {
-      toast.error('Backup Error', err.message || 'Could not dispatch Google Drive backup.');
-    } finally {
-      setIsBackingUp(false);
-    }
-  };
-
-  // Download Complete Client ZIP
-  const handleDownloadClientZip = () => {
-    if (!record) return;
-    downloadClientBackupZip(record, documents || [], toast);
-  };
-
-  // Download Document via Signed URL / Stream
-  const handleDownload = async (doc: OnboardingDocument) => {
-    setDownloadingDocId(doc.id);
-    try {
-      await downloadDocument(doc, {
-        recordId: id,
-        toast,
-      });
-    } finally {
-      setDownloadingDocId(null);
-    }
-  };
-
-  // Delete Document
-  const handleDeleteDocument = async (doc: OnboardingDocument) => {
-    try {
-      // 1. Delete from storage
-      try {
-        await supabase.storage.from('onboarding-documents').remove([doc.storage_path]);
-      } catch {
-        // Ignore
-      }
-
-      // 2. Delete metadata row
-      if (doc.id) {
-        await supabase
-          .from('onboarding_documents')
-          .delete()
-          .eq('id', doc.id);
-      }
-
-      await logAudit('document_deleted', 'document', id, {
-        file_name: doc.file_name,
-      });
-
-      toast.success('Document Removed', `${doc.file_name} deleted from vault.`);
-      setDeleteDoc(null);
-      queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
-      queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
-      queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
-      queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
-    } catch (err: any) {
-      toast.error('Delete Failed', err.message || 'Could not delete document.');
-    }
-  };
-
-  // Replace Document
-  const handleReplaceFile = async (file: File, docToReplace: OnboardingDocument) => {
-    if (!id) return;
-    try {
-      const sanitizedName = file.name.replace(/[^a-zA-Z0-9.-]/g, '_');
-      const uniqueFileName = `${Date.now()}_${sanitizedName}`;
-      const storagePath = `${id}/${docToReplace.category}/${uniqueFileName}`;
-      const uploaderId = profile?.id && isValidUuid(profile.id) ? profile.id : null;
-
-      // 1. Upload to Supabase Storage (Client + Serverless fallback)
-      const uploadResult = await uploadDocumentToStorage(storagePath, file, 'onboarding-documents');
-      if (!uploadResult.success) {
-        throw new Error(uploadResult.error || 'Storage upload failed — replacement file could not be stored.');
-      }
-
-      const docPayload: any = {
-        onboarding_id: id,
-        file_name: file.name,
-        original_name: file.name,
-        category: docToReplace.category,
-        storage_path: storagePath,
-        mime_type: file.type || 'application/octet-stream',
-        file_size: file.size,
-      };
-
-      if (uploaderId) {
-        docPayload.uploaded_by = uploaderId;
-      }
-
-      const saveRes = await saveDocumentMetadata('onboarding_documents', docPayload, 'insert');
-      if (!saveRes.success) {
-        throw new Error(`Database record failed: ${saveRes.error}`);
-      }
-
-      // Remove old document record if exists
-      if (docToReplace.id && isValidUuid(docToReplace.id)) {
-        await saveDocumentMetadata('onboarding_documents', null, 'delete', { id: docToReplace.id });
-      }
-
-      await logAudit('document_uploaded', 'document', id, {
-        file_name: file.name,
-        category: docToReplace.category,
-        size_bytes: file.size,
-        is_replacement: true,
-      });
-
-      toast.success('Document Replaced', `${file.name} successfully updated.`);
-      setReplaceTargetDoc(null);
-      queryClient.invalidateQueries({ queryKey: ['onboarding-documents', id] });
-      queryClient.invalidateQueries({ queryKey: ['vault-records-grouped'] });
-      queryClient.invalidateQueries({ queryKey: ['global-documents-search'] });
-      queryClient.invalidateQueries({ queryKey: ['onboarding-audit-logs', id] });
-    } catch (err: any) {
-      toast.error('Replace Failed', err.message || 'Could not replace document.');
-    }
-  };
-
-  const getDocIcon = (mime: string, name: string) => {
-    if (mime.includes('pdf') || name.endsWith('.pdf')) {
-      return <FileText className="w-5 h-5 text-red-500" />;
-    }
-    return <FileImage className="w-5 h-5 text-blue-500" />;
-  };
-
-  const canEdit = hasPermission(profile?.role, 'onboarding:edit');
-  const canDeleteDocs = hasPermission(profile?.role, 'document:delete');
-  const canAssign = hasPermission(profile?.role, 'employee:assign');
+  const progress = calculateProgress();
 
   if (recordLoading) {
     return (
-      <PageLayout title="Loading Record...">
-        <div className="p-12 text-center">
-          <div className="w-8 h-8 border-3 border-blue-200 border-t-[#1677FF] rounded-full animate-spin mx-auto mb-4" />
-          <p className="text-sm text-gray-500">Decrypting & loading onboarding data...</p>
+      <PageLayout title="Loading Client...">
+        <div className="flex flex-col items-center justify-center min-h-[60vh]">
+          <div className="w-10 h-10 border-3 border-blue-200 border-t-[#1677FF] rounded-full animate-spin mb-4" />
+          <p className="text-sm font-medium text-gray-500">Loading client record...</p>
         </div>
       </PageLayout>
     );
@@ -625,703 +254,223 @@ export function OnboardingDetail() {
 
   if (!record) {
     return (
-      <PageLayout title="Record Not Found">
-        <EmptyState
-          icon={Building2}
-          title="Onboarding Record Not Found"
-          description="The requested WhatsApp onboarding record does not exist or you do not have permission to view it."
-          actionLabel="Back to Roster"
-          onAction={() => navigate('/onboarding')}
-        />
+      <PageLayout title="Client Not Found">
+        <div className="p-8 bg-white rounded-xl border border-gray-100 shadow-sm text-center my-8">
+          <AlertCircle className="w-12 h-12 text-amber-500 mx-auto mb-3" />
+          <h3 className="text-lg font-bold text-gray-900">Client Record Not Found</h3>
+          <p className="text-sm text-gray-500 mt-1 mb-6">The requested client record could not be located.</p>
+          <button
+            onClick={() => navigate('/onboarding')}
+            className="px-4 py-2 bg-[#1677FF] text-white rounded-lg text-sm font-medium hover:bg-blue-600 transition-colors inline-flex items-center gap-2 cursor-pointer"
+          >
+            <ArrowLeft className="w-4 h-4" />
+            Back to Client List
+          </button>
+        </div>
       </PageLayout>
     );
   }
 
+  const tabs: { id: TabKey; label: string; icon: any; count?: number }[] = [
+    { id: 'overview', label: 'Overview', icon: Building2 },
+    { id: 'meta', label: 'Meta Business', icon: Briefcase, count: entityCounts?.meta },
+    { id: 'waba', label: 'WABA', icon: Smartphone, count: entityCounts?.waba },
+    { id: 'phones', label: 'Phone Numbers', icon: Phone, count: entityCounts?.phones },
+    { id: 'documents', label: 'Documents', icon: FolderLock, count: Array.isArray(documents) ? documents.length : 0 },
+    { id: 'credentials', label: 'Credentials', icon: KeyRound },
+    { id: 'activity', label: 'Activity', icon: ScrollText },
+  ];
+
   return (
-    <PageLayout title={record.brand_name}>
-      <div className="space-y-6">
-        {/* Back navigation & Top Bar */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={() => navigate('/onboarding')}
-              className="p-2 text-gray-500 hover:text-gray-900 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors shadow-2xs"
-            >
-              <ArrowLeft className="w-4 h-4" />
-            </button>
-            <div>
-              <div className="flex items-center gap-2">
-                <h2 className="text-2xl font-extrabold text-gray-900 tracking-tight">
-                  {record.brand_name}
-                </h2>
-                <StatusBadge status={record.status} />
-              </div>
-              <p className="text-xs text-gray-500 mt-0.5">
-                {record.company_name || 'Individual Entity'} • Added {format(new Date(record.created_at), 'dd MMM yyyy')}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2.5">
-            {/* Status change select */}
-            {canEdit && (
-              <select
-                value={record.status}
-                onChange={(e) => statusMutation.mutate(e.target.value as OnboardingStatus)}
-                className="px-3 py-2 text-xs font-semibold bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] shadow-2xs"
-              >
-                {STATUS_OPTIONS.map((opt) => (
-                  <option key={opt.value} value={opt.value}>
-                    Status: {opt.label}
-                  </option>
-                ))}
-              </select>
-            )}
-
-            {canEdit && (
+    <PageLayout title={record?.brand_name || 'Client Details'}>
+      <div className="space-y-6 pb-12">
+        {/* Top Header Card */}
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-6">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+            <div className="flex items-start gap-4">
               <button
-                onClick={() => navigate(`/onboarding/${record.id}/edit`)}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-gray-700 bg-white border border-gray-200 rounded-xl hover:bg-gray-50 transition-colors shadow-2xs"
+                onClick={() => navigate('/onboarding')}
+                className="p-2 text-gray-400 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors mt-0.5 cursor-pointer"
+                title="Back to List"
               >
-                <Edit className="w-4 h-4 text-gray-500" />
-                Edit Profile
+                <ArrowLeft className="w-5 h-5" />
               </button>
-            )}
-          </div>
-        </div>
-
-        {/* Top Info Grid: Client info & Encrypted Vault */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-          {/* Client Information Card */}
-          <div className="lg:col-span-2 p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-5">
-            <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-lg bg-blue-50 text-[#1677FF]">
-                  <Building2 className="w-4 h-4" />
-                </div>
-                <h3 className="text-base font-bold text-gray-900">Client & Business Details</h3>
-              </div>
-              <span className="text-xs font-mono font-bold text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full border border-emerald-200">
-                {record.whatsapp_number}
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
-              <div className="p-3 rounded-xl bg-gray-50/70 border border-gray-100">
-                <span className="text-gray-400 font-semibold block uppercase text-[10px]">
-                  Registered Brand
-                </span>
-                <span className="text-sm font-bold text-gray-900 mt-0.5 block">
-                  {record.brand_name}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-gray-50/70 border border-gray-100">
-                <span className="text-gray-400 font-semibold block uppercase text-[10px]">
-                  Legal Company Name
-                </span>
-                <span className="text-sm font-semibold text-gray-800 mt-0.5 block">
-                  {record.company_name || '—'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-gray-50/70 border border-gray-100">
-                <span className="text-gray-400 font-semibold block uppercase text-[10px]">
-                  Contact Person
-                </span>
-                <span className="text-sm font-semibold text-gray-800 mt-0.5 block">
-                  {record.contact_person || '—'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-gray-50/70 border border-gray-100">
-                <span className="text-gray-400 font-semibold block uppercase text-[10px]">
-                  Contact Email
-                </span>
-                <span className="text-sm font-semibold text-gray-800 mt-0.5 block">
-                  {record.contact_email ? (
-                    <a href={`mailto:${record.contact_email}`} className="text-[#1677FF] hover:underline">
-                      {record.contact_email}
-                    </a>
-                  ) : (
-                    '—'
-                  )}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-gray-50/70 border border-gray-100">
-                <span className="text-gray-400 font-semibold block uppercase text-[10px]">
-                  Contact Phone
-                </span>
-                <span className="text-sm font-semibold text-gray-800 mt-0.5 block">
-                  {record.contact_number || '—'}
-                </span>
-              </div>
-
-              <div className="p-3 rounded-xl bg-gray-50/70 border border-gray-100">
-                <span className="text-gray-400 font-semibold block uppercase text-[10px]">
-                  Onboarding Date
-                </span>
-                <span className="text-sm font-semibold text-gray-800 mt-0.5 block">
-                  {record.onboarding_date
-                    ? format(new Date(record.onboarding_date), 'dd MMMM yyyy')
-                    : '—'}
-                </span>
-              </div>
-            </div>
-
-            {record.notes && (
-              <div className="p-3.5 bg-blue-50/40 rounded-xl border border-blue-100 text-xs">
-                <span className="font-bold text-blue-900 block mb-1">Operational Notes:</span>
-                <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{record.notes}</p>
-              </div>
-            )}
-          </div>
-
-          {/* Right Column: Encrypted Credential Vault & Staff Assignment */}
-          <div className="space-y-6">
-            {/* Facebook / Meta Login Details Vault */}
-            <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
-              <div className="flex items-center justify-between pb-3 border-b border-gray-100">
-                <div className="flex items-center gap-2">
-                  <div className="p-2 rounded-lg bg-blue-50 text-[#1677FF]">
-                    <KeyRound className="w-4 h-4" />
-                  </div>
-                  <h3 className="text-sm font-bold text-gray-900">Facebook / Meta Login Details</h3>
-                </div>
-                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-blue-100 text-blue-800">
-                  AES-256 Vault
-                </span>
-              </div>
-
-              {/* Security Warning Alert */}
-              <div className="p-3 bg-amber-50/80 rounded-xl border border-amber-200 text-xs text-amber-900 flex items-start gap-2.5">
-                <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
-                <p className="text-[11px] leading-tight">
-                  Confidential Meta / Facebook credentials. Revealing or copying will register an immutable event in the audit trail.
-                </p>
-              </div>
-
-              {/* Username / Login Email Field */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                  Facebook / Meta Username or Login Email
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type="text"
-                    readOnly
-                    value={record.username || '—'}
-                    className="flex-1 px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-lg text-gray-900 font-mono"
-                  />
-                  {record.username && (
-                    <button
-                      onClick={() => handleCopy(record.username, 'username')}
-                      className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors cursor-pointer"
-                      title="Copy Username"
-                    >
-                      {copiedField === 'username' ? (
-                        <Check className="w-3.5 h-3.5 text-emerald-600" />
-                      ) : (
-                        <Copy className="w-3.5 h-3.5" />
-                      )}
-                    </button>
+              <div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                  <h1 className="text-2xl font-bold text-gray-900 tracking-tight">
+                    {record.brand_name || 'Unnamed Brand'}
+                  </h1>
+                  <StatusBadge status={record.status} />
+                  {record.client_type && (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-100 uppercase">
+                      {record.client_type}
+                    </span>
                   )}
                 </div>
-              </div>
-
-              {/* Secret Password Field (Masked / Decrypted) */}
-              <div className="space-y-1">
-                <label className="text-[10px] font-bold uppercase tracking-wider text-gray-500">
-                  Facebook / Meta Password
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    type={showPassword ? 'text' : 'password'}
-                    readOnly
-                    value={
-                      showPassword
-                        ? decryptedPassword || ''
-                        : record.credential_encrypted
-                        ? '••••••••••••••••'
-                        : 'Not Configured'
-                    }
-                    className={`flex-1 px-3 py-2 text-xs border rounded-lg font-mono ${
-                      showPassword ? 'bg-amber-50/50 border-amber-200 text-gray-900' : 'bg-gray-50 border-gray-200 text-gray-500'
-                    }`}
-                  />
-                  {record.credential_encrypted && (
-                    <>
-                      <button
-                        onClick={handleTogglePassword}
-                        className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors cursor-pointer"
-                        title={showPassword ? 'Hide Secret' : 'Reveal Secret (Audited)'}
-                      >
-                        {showPassword ? (
-                          <EyeOff className="w-3.5 h-3.5" />
-                        ) : (
-                          <Eye className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                      <button
-                        onClick={async () => {
-                          if (!decryptedPassword) {
-                            await handleTogglePassword();
-                          }
-                          if (decryptedPassword) {
-                            handleCopy(decryptedPassword, 'password');
-                          }
-                        }}
-                        className="p-2 bg-gray-100 hover:bg-gray-200 rounded-lg text-gray-600 transition-colors cursor-pointer"
-                        title="Copy Secret (Audited)"
-                      >
-                        {copiedField === 'password' ? (
-                          <Check className="w-3.5 h-3.5 text-emerald-600" />
-                        ) : (
-                          <Copy className="w-3.5 h-3.5" />
-                        )}
-                      </button>
-                    </>
+                <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-500">
+                  {record.company_name && (
+                    <span className="flex items-center gap-1">
+                      <Building2 className="w-3.5 h-3.5 text-gray-400" />
+                      {record.company_name}
+                    </span>
                   )}
-                </div>
-              </div>
-
-              {/* Platform & Login URL */}
-              {(record.platform || record.login_url) && (
-                <div className="pt-2 border-t border-gray-100 space-y-2 text-xs">
-                  {record.platform && (
-                    <div className="flex justify-between">
-                      <span className="text-gray-400">Platform:</span>
-                      <span className="font-semibold text-gray-800">{record.platform}</span>
-                    </div>
-                  )}
-                  {record.login_url && (
-                    <div className="flex justify-between items-center">
-                      <span className="text-gray-400">Portal URL:</span>
-                      <a
-                        href={record.login_url}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[#1677FF] hover:underline flex items-center gap-1 truncate max-w-[160px]"
-                      >
-                        Launch Console <ExternalLink className="w-3 h-3 flex-shrink-0" />
-                      </a>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* Staff Assignment Card */}
-            <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-3">
-              <div className="flex items-center justify-between">
-                <h3 className="text-sm font-bold text-gray-900">Assigned Team Staff</h3>
-                {canAssign && (
-                  <button
-                    onClick={() => {
-                      setSelectedNewAssignee(record.assigned_to || '');
-                      setReassignModalOpen(true);
-                    }}
-                    className="text-xs font-semibold text-[#1677FF] hover:underline"
-                  >
-                    Reassign
-                  </button>
-                )}
-              </div>
-
-              {record.assigned_profile ? (
-                <div className="flex items-center gap-3 p-3 bg-gray-50 rounded-xl">
-                  <div className="w-10 h-10 rounded-full bg-blue-100 text-[#1677FF] font-bold flex items-center justify-center text-sm">
-                    {record.assigned_profile.full_name.charAt(0).toUpperCase()}
-                  </div>
-                  <div className="min-w-0">
-                    <p className="text-sm font-semibold text-gray-900 truncate">
-                      {record.assigned_profile.full_name}
-                    </p>
-                    <p className="text-xs text-gray-500 truncate">
-                      {record.assigned_profile.corporate_email}
-                    </p>
-                  </div>
-                </div>
-              ) : (
-                <div className="p-3 bg-amber-50/60 rounded-xl text-center text-xs text-amber-800">
-                  No employee is currently assigned to this brand.
-                </div>
-              )}
-            </div>
-
-            {/* Google Drive Disaster Recovery Secondary Archive Card */}
-            <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <HardDrive className="w-4 h-4 text-[#1677FF]" />
-                  <h3 className="text-sm font-bold text-gray-900">Google Drive Secondary Backup</h3>
-                </div>
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                  <CheckCircle2 className="w-3 h-3 text-emerald-600" />
-                  Active Archive
-                </span>
-              </div>
-
-              <div className="p-3 bg-gray-50 rounded-xl space-y-1.5 text-xs text-gray-600">
-                <p className="font-semibold text-gray-900 flex items-center justify-between">
-                  <span>Target Archive:</span>
-                  <span className="text-[#1677FF] font-mono text-[11px]">parvejweb1@gmail.com</span>
-                </p>
-                <p className="text-[11px] text-gray-500">
-                  Directory: <span className="font-mono text-gray-700">IMMENSE BACKUP/WhatsApp/{record.company_name || record.brand_name}/</span>
-                </p>
-              </div>
-
-              <div className="flex flex-col sm:flex-row items-center gap-2 pt-1">
-                <button
-                  type="button"
-                  onClick={() =>
-                    window.open(
-                      `https://drive.google.com/drive/u/0/folders/immense-backup-whatsapp-${encodeURIComponent(
-                        record.company_name || record.brand_name
-                      )}`,
-                      '_blank'
-                    )
-                  }
-                  className="w-full sm:w-auto flex-1 inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-gray-100 hover:bg-gray-200 text-gray-700 text-xs font-semibold rounded-xl transition-colors cursor-pointer"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  Open in Google Drive
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleTriggerBackup}
-                  disabled={isBackingUp}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-[#1677FF] hover:bg-[#0B5FE0] text-white text-xs font-bold rounded-xl transition-all shadow-2xs cursor-pointer"
-                >
-                  <RotateCw className={`w-3.5 h-3.5 ${isBackingUp ? 'animate-spin' : ''}`} />
-                  {isBackingUp ? 'Backing Up...' : 'Backup Now'}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={handleDownloadClientZip}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-slate-800 hover:bg-slate-900 text-white text-xs font-semibold rounded-xl transition-colors cursor-pointer"
-                  title="Download complete structured ZIP archive"
-                >
-                  <Download className="w-3.5 h-3.5" />
-                  Download ZIP
-                </button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Core Feature: Document Vault */}
-        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-6">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-gray-100">
-            <div>
-              <div className="flex items-center gap-2.5">
-                <div className="p-2 rounded-lg bg-blue-50 text-[#1677FF]">
-                  <FolderLock className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-bold text-gray-900">Document Vault</h3>
-                  <p className="text-xs text-gray-500">
-                    Encrypted compliance repository for GST, PAN, KYC, and Meta authorization records
-                  </p>
-                </div>
-              </div>
-            </div>
-
-            <span className="text-xs font-semibold px-3 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200 self-start sm:self-auto">
-              {documents?.length || 0} Documents Vaulted
-            </span>
-          </div>
-
-          {/* Upload Form */}
-          <form
-            onSubmit={handleUploadDocument}
-            className="p-4 bg-gray-50/70 border border-dashed border-gray-300 rounded-2xl space-y-3"
-          >
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-              {/* Category Selector */}
-              <div className="sm:w-64">
-                <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
-                  Document Category
-                </label>
-                <select
-                  value={uploadCategory}
-                  onChange={(e) => setUploadCategory(e.target.value as DocumentCategory)}
-                  className="w-full px-3 py-2 text-xs bg-white border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
-                >
-                  {CATEGORY_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-
-              {/* File Input */}
-              <div className="flex-1">
-                <label className="block text-[10px] font-bold uppercase text-gray-500 mb-1">
-                  Select Document (PDF, JPG, PNG, DOCX • Max 10MB)
-                </label>
-                <input
-                  type="file"
-                  accept=".pdf,.jpg,.jpeg,.png,.docx,.doc,application/pdf,image/jpeg,image/png,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
-                  onChange={(e) => setSelectedFile(e.target.files?.[0] || null)}
-                  className="w-full text-xs text-gray-500 file:mr-3 file:py-2 file:px-4 file:rounded-xl file:border-0 file:text-xs file:font-semibold file:bg-blue-50 file:text-[#1677FF] hover:file:bg-blue-100 cursor-pointer"
-                />
-              </div>
-
-              {/* Submit Button */}
-              <div className="sm:self-end">
-                <button
-                  type="submit"
-                  disabled={!selectedFile || isUploading}
-                  className="w-full sm:w-auto inline-flex items-center justify-center gap-2 px-5 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl transition-all shadow-xs disabled:opacity-50"
-                >
-                  {isUploading ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-white/40 border-t-white rounded-full animate-spin" />
-                      Encrypting & Vaulting...
-                    </>
-                  ) : (
-                    <>
-                      <UploadCloud className="w-4 h-4" />
-                      Vault Document
-                    </>
-                  )}
-                </button>
-              </div>
-            </div>
-          </form>
-
-          {/* Documents Table */}
-          {docsLoading ? (
-            <div className="space-y-2">
-              {[1, 2, 3].map((i) => (
-                <div key={i} className="h-12 bg-gray-100 rounded-xl animate-pulse" />
-              ))}
-            </div>
-          ) : !documents || documents.length === 0 ? (
-            <div className="text-center py-10 bg-gray-50/50 rounded-xl border border-gray-100">
-              <FolderLock className="w-10 h-10 text-gray-300 mx-auto mb-2" />
-              <p className="text-sm font-semibold text-gray-700">No Documents Uploaded</p>
-              <p className="text-xs text-gray-400 mt-1 max-w-sm mx-auto">
-                Upload the client's GST Certificate, PAN, or WhatsApp Approval above to secure them in the vault.
-              </p>
-            </div>
-          ) : (
-            <div className="border border-gray-200 rounded-xl overflow-hidden">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-gray-50 border-b border-gray-200 text-gray-600 uppercase font-semibold">
-                  <tr>
-                    <th className="py-3 px-4">Document</th>
-                    <th className="py-3 px-4">Category</th>
-                    <th className="py-3 px-4">Uploaded By</th>
-                    <th className="py-3 px-4">Date</th>
-                    <th className="py-3 px-4">Size</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-100 text-gray-700">
-                  {documents.map((doc) => (
-                    <tr key={doc.id} className="hover:bg-blue-50/30 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="flex items-center gap-2.5 font-semibold text-gray-900">
-                          {getDocIcon(doc.mime_type, doc.file_name)}
-                          <span className="truncate max-w-xs">{doc.file_name}</span>
-                        </div>
-                      </td>
-                      <td className="py-3 px-4">
-                        <span className="px-2.5 py-1 rounded-full bg-blue-50 text-blue-800 font-medium text-[11px]">
-                          {formatCategoryLabel(doc.category)}
-                        </span>
-                      </td>
-                      <td className="py-3 px-4 text-gray-600">
-                        {doc.uploader_profile?.full_name || 'Staff'}
-                      </td>
-                      <td className="py-3 px-4 text-gray-500">
-                        {format(new Date(doc.created_at), 'dd MMM yyyy, HH:mm')}
-                      </td>
-                      <td className="py-3 px-4 text-gray-400 font-mono text-[11px]">
-                        {(doc.file_size / 1024).toFixed(1)} KB
-                      </td>
-                      <td className="py-3 px-4 text-right">
-                        <div className="flex items-center justify-end gap-1.5">
-                          <button
-                            onClick={() => handlePreview(doc)}
-                            className="p-1.5 text-gray-500 hover:text-[#1677FF] hover:bg-blue-50 rounded-lg"
-                            title="Preview Document"
-                          >
-                            <Eye className="w-4 h-4" />
-                          </button>
-                          <button
-                            onClick={() => handleDownload(doc)}
-                            className="p-1.5 text-gray-500 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg cursor-pointer"
-                            title="Download Signed Token"
-                          >
-                            <Download className="w-4 h-4" />
-                          </button>
-                          {canEdit && (
-                            <button
-                              onClick={() => {
-                                setReplaceTargetDoc(doc);
-                                replaceDocInputRef.current?.click();
-                              }}
-                              className="p-1.5 text-gray-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg cursor-pointer"
-                              title="Replace / Update Document"
-                            >
-                              <RefreshCw className="w-4 h-4" />
-                            </button>
-                          )}
-                          {canDeleteDocs && (
-                            <button
-                              onClick={() => setDeleteDoc(doc)}
-                              className="p-1.5 text-gray-500 hover:text-red-600 hover:bg-red-50 rounded-lg cursor-pointer"
-                              title="Delete from Vault"
-                            >
-                              <Trash2 className="w-4 h-4" />
-                            </button>
-                          )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-
-          {/* Hidden Replace File Input */}
-          <input
-            type="file"
-            ref={replaceDocInputRef}
-            accept=".pdf,.jpg,.jpeg,.png,.webp,.docx,.doc,application/pdf,image/jpeg,image/png,image/webp,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/msword"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file && replaceTargetDoc) {
-                handleReplaceFile(file, replaceTargetDoc);
-              }
-              e.target.value = '';
-            }}
-          />
-        </div>
-
-        {/* Audit Log Timeline */}
-        <div className="p-6 bg-white rounded-2xl border border-gray-200 shadow-xs space-y-4">
-          <div className="flex items-center gap-2 pb-3 border-b border-gray-100">
-            <div className="p-2 rounded-lg bg-gray-100 text-gray-700">
-              <ScrollText className="w-4 h-4" />
-            </div>
-            <div>
-              <h3 className="text-sm font-bold text-gray-900">Record Activity & Audit Trail</h3>
-              <p className="text-[11px] text-gray-500">
-                Immutable compliance tracking of changes, views, and downloads
-              </p>
-            </div>
-          </div>
-
-          {!auditLogs || auditLogs.length === 0 ? (
-            <p className="text-xs text-gray-400 py-3">No activity logs recorded for this record yet.</p>
-          ) : (
-            <div className="space-y-3">
-              {auditLogs.map((log) => (
-                <div
-                  key={log.id}
-                  className="flex items-start justify-between p-3 bg-gray-50/70 rounded-xl text-xs"
-                >
-                  <div className="flex items-start gap-2.5">
-                    <div className="w-2 h-2 rounded-full bg-[#1677FF] mt-1.5" />
-                    <div>
-                      <p className="font-semibold text-gray-900 capitalize">
-                        {log.action.replace(/_/g, ' ')}
-                      </p>
-                      <p className="text-[11px] text-gray-500">
-                        By {log.user_profile?.full_name || 'Staff Member'}
-                      </p>
-                    </div>
-                  </div>
-                  <span className="text-[11px] text-gray-400">
-                    {formatDistanceToNow(new Date(log.created_at), { addSuffix: true })}
+                  <span className="flex items-center gap-1 font-mono">
+                    <Phone className="w-3.5 h-3.5 text-gray-400" />
+                    {record.whatsapp_number || '—'}
+                  </span>
+                  <span className="flex items-center gap-1">
+                    <Clock className="w-3.5 h-3.5 text-gray-400" />
+                    Created {formatDateSafe(record.created_at)}
                   </span>
                 </div>
-              ))}
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Document Preview Modal */}
-      <DocumentPreviewModal
-        document={previewDoc}
-        signedUrl={previewSignedUrl}
-        onClose={() => {
-          setPreviewDoc(null);
-          setPreviewSignedUrl(null);
-        }}
-        onDownload={() => previewDoc && handleDownload(previewDoc)}
-      />
-
-      {/* Delete Document Confirmation Dialog */}
-      <ConfirmDialog
-        open={Boolean(deleteDoc)}
-        onClose={() => setDeleteDoc(null)}
-        onConfirm={() => deleteDoc && handleDeleteDocument(deleteDoc)}
-        title="Delete Document"
-        message={`Are you sure you want to permanently delete "${deleteDoc?.file_name}" from this onboarding vault?`}
-        confirmLabel="Delete Document"
-        variant="danger"
-      />
-
-      {/* Reassign Employee Modal */}
-      {reassignModalOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-xs">
-          <div className="w-full max-w-md p-6 bg-white rounded-2xl shadow-xl space-y-4">
-            <h3 className="text-base font-bold text-gray-900">Reassign Onboarding Record</h3>
-            <p className="text-xs text-gray-500">
-              Select the active corporate employee who will manage {record.brand_name}.
-            </p>
-
-            <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
-                Corporate Employee
-              </label>
-              <select
-                value={selectedNewAssignee}
-                onChange={(e) => setSelectedNewAssignee(e.target.value)}
-                className="w-full px-3 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
-              >
-                <option value="">-- Unassigned --</option>
-                {(allEmployees || []).map((emp) => (
-                  <option key={emp.id} value={emp.id}>
-                    {emp.full_name} ({emp.corporate_email})
-                  </option>
-                ))}
-              </select>
+              </div>
             </div>
 
-            <div className="flex items-center justify-end gap-2 pt-3 border-t border-gray-100">
-              <button
-                type="button"
-                onClick={() => setReassignModalOpen(false)}
-                className="px-4 py-2 text-xs font-medium text-gray-700 hover:bg-gray-100 rounded-lg"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => reassignMutation.mutate(selectedNewAssignee)}
-                disabled={reassignMutation.isPending}
-                className="px-4 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-lg"
-              >
-                {reassignMutation.isPending ? 'Updating...' : 'Confirm Assignment'}
-              </button>
+            {/* Quick Actions & Status Changer */}
+            <div className="flex flex-wrap items-center gap-3 self-end lg:self-center">
+              {hasPermission(profile?.role, 'onboarding:edit') && (
+                <div className="flex items-center gap-2">
+                  <label className="text-xs font-medium text-gray-500">Status:</label>
+                  <select
+                    value={record.status || 'pending'}
+                    onChange={(e) => statusMutation.mutate(e.target.value as OnboardingStatus)}
+                    disabled={statusMutation.isPending}
+                    className="text-xs font-semibold px-3 py-1.5 rounded-lg border border-gray-200 bg-white text-gray-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {STATUS_OPTIONS.map((opt) => (
+                      <option key={opt.value} value={opt.value}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {hasPermission(profile?.role, 'onboarding:edit') && (
+                <button
+                  onClick={() => navigate(`/onboarding/${record.id}/edit`)}
+                  className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors cursor-pointer"
+                >
+                  <Edit className="w-3.5 h-3.5" />
+                  Edit Client
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Workflow Progress Bar */}
+          <div className="mt-6 pt-5 border-t border-gray-100">
+            <div className="flex items-center justify-between mb-2">
+              <div className="flex items-center gap-2">
+                <TrendingUp className="w-4 h-4 text-[#1677FF]" />
+                <span className="text-xs font-bold text-gray-700 uppercase tracking-wider">
+                  Onboarding Completion
+                </span>
+              </div>
+              <span className="text-xs font-bold text-[#1677FF]">{progress}%</span>
+            </div>
+            <div className="w-full h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-gradient-to-r from-blue-500 to-emerald-500 rounded-full transition-all duration-500 ease-out"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            {/* Step Indicators */}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-6 gap-2 mt-3 text-[11px] font-medium text-gray-400">
+              <div className="flex items-center gap-1 text-emerald-600 font-semibold">
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>1. Client Info</span>
+              </div>
+              <div className={`flex items-center gap-1 ${entityCounts?.meta ? 'text-emerald-600 font-semibold' : ''}`}>
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>2. Meta Portfolio</span>
+              </div>
+              <div className={`flex items-center gap-1 ${entityCounts?.waba ? 'text-emerald-600 font-semibold' : ''}`}>
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>3. WABA Setup</span>
+              </div>
+              <div className={`flex items-center gap-1 ${entityCounts?.phones ? 'text-emerald-600 font-semibold' : ''}`}>
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>4. Phone Number</span>
+              </div>
+              <div className={`flex items-center gap-1 ${Array.isArray(documents) && documents.length > 0 ? 'text-emerald-600 font-semibold' : ''}`}>
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>5. Documents</span>
+              </div>
+              <div className={`flex items-center gap-1 ${record.status === 'live' || record.status === 'completed' ? 'text-emerald-600 font-semibold' : ''}`}>
+                <CheckCircle2 className="w-3.5 h-3.5 flex-shrink-0" />
+                <span>6. Live</span>
+              </div>
             </div>
           </div>
         </div>
-      )}
+
+        {/* Tab Navigation */}
+        <div className="bg-white rounded-xl border border-gray-100 shadow-sm p-1.5">
+          <div className="flex items-center gap-1 overflow-x-auto scrollbar-none">
+            {tabs.map((tab) => {
+              const Icon = tab.icon;
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all cursor-pointer ${
+                    isActive
+                      ? 'bg-[#1677FF] text-white shadow-xs'
+                      : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                  }`}
+                >
+                  <Icon className="w-4 h-4" />
+                  <span>{tab.label}</span>
+                  {typeof tab.count === 'number' && (
+                    <span
+                      className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                        isActive
+                          ? 'bg-white/20 text-white'
+                          : 'bg-gray-100 text-gray-600'
+                      }`}
+                    >
+                      {tab.count}
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Active Tab Content */}
+        <div>
+          {activeTab === 'overview' && (
+            <ClientOverviewTab
+              record={record}
+              staffList={staffList}
+              onReassign={(staffId) => reassignMutation.mutate(staffId)}
+              onStatusChange={(status) => statusMutation.mutate(status as OnboardingStatus)}
+            />
+          )}
+
+          {activeTab === 'meta' && <MetaBusinessTab clientId={record.id} />}
+
+          {activeTab === 'waba' && <WabaTab clientId={record.id} />}
+
+          {activeTab === 'phones' && <PhoneNumbersTab clientId={record.id} />}
+
+          {activeTab === 'documents' && (
+            <DocumentsTab
+              recordId={record.id}
+              record={record}
+              documents={documents}
+              onRefresh={refetchDocuments}
+            />
+          )}
+
+          {activeTab === 'credentials' && <CredentialsTab record={record} />}
+
+          {activeTab === 'activity' && <ActivityTab recordId={record.id} />}
+        </div>
+      </div>
     </PageLayout>
   );
 }

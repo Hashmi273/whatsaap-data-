@@ -56,6 +56,9 @@ export interface OnboardingRecord {
   created_by: string | null;
   created_at: string;
   updated_at: string;
+  // Added fields
+  client_type?: string;
+  website?: string;
   // Joined fields (optional)
   assigned_profile?: Profile;
   creator_profile?: Profile;
@@ -112,6 +115,68 @@ export interface AuditLog {
   created_at: string;
   // Joined
   user_profile?: Profile;
+}
+
+export type VerificationStatus = 'not_started' | 'pending' | 'verified' | 'rejected';
+export type WabaStatus = 'active' | 'pending' | 'suspended' | 'banned';
+export type PhoneNumberStatus = 'connected' | 'pending' | 'disconnected' | 'banned';
+export type PhoneVerificationStatus = 'verified' | 'pending' | 'not_verified';
+export type ClientType = 'enterprise' | 'smb' | 'startup' | 'agency' | '';
+
+export interface MetaBusinessPortfolio {
+  id: string;
+  client_id: string;
+  portfolio_name: string;
+  portfolio_id: string;
+  portfolio_owner: string;
+  meta_login_email: string;
+  verification_status: VerificationStatus;
+  verification_date: string | null;
+  admin_access: string;
+  recovery_email: string;
+  recovery_phone: string;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface WabaAccount {
+  id: string;
+  client_id: string;
+  meta_portfolio_id: string | null;
+  waba_name: string;
+  waba_id: string;
+  waba_status: WabaStatus;
+  business_name: string;
+  messaging_limit: string;
+  quality_rating: string;
+  account_status: string;
+  assigned_to: string | null;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  assigned_profile?: Profile;
+  meta_portfolio?: MetaBusinessPortfolio;
+}
+
+export interface PhoneNumber {
+  id: string;
+  waba_id: string | null;
+  client_id: string;
+  display_name: string;
+  phone_number: string;
+  phone_number_id: string;
+  status: PhoneNumberStatus;
+  quality_rating: string;
+  messaging_limit: string;
+  verification_status: PhoneVerificationStatus;
+  connected_date: string | null;
+  notes: string;
+  created_at: string;
+  updated_at: string;
+  // Joined
+  waba_account?: WabaAccount;
 }
 
 export interface DashboardStats {
@@ -171,6 +236,55 @@ export const ROLE_OPTIONS: SelectOption[] = [
   { value: 'employee', label: 'Employee' },
   { value: 'viewer', label: 'Viewer' },
 ];
+
+export const VERIFICATION_STATUS_OPTIONS: SelectOption[] = [
+  { value: 'not_started', label: 'Not Started' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'verified', label: 'Verified' },
+  { value: 'rejected', label: 'Rejected' },
+];
+
+export const WABA_STATUS_OPTIONS: SelectOption[] = [
+  { value: 'active', label: 'Active' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'suspended', label: 'Suspended' },
+  { value: 'banned', label: 'Banned' },
+];
+
+export const PHONE_STATUS_OPTIONS: SelectOption[] = [
+  { value: 'connected', label: 'Connected' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'disconnected', label: 'Disconnected' },
+  { value: 'banned', label: 'Banned' },
+];
+
+export const CLIENT_TYPE_OPTIONS: SelectOption[] = [
+  { value: 'enterprise', label: 'Enterprise' },
+  { value: 'smb', label: 'SMB' },
+  { value: 'startup', label: 'Startup' },
+  { value: 'agency', label: 'Agency' },
+];
+
+export const VERIFICATION_STATUS_COLORS: Record<VerificationStatus, { bg: string; text: string; dot: string }> = {
+  not_started: { bg: 'bg-gray-100', text: 'text-gray-600', dot: 'bg-gray-400' },
+  pending: { bg: 'bg-amber-50', text: 'text-amber-700', dot: 'bg-amber-500' },
+  verified: { bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  rejected: { bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
+};
+
+export const WABA_STATUS_COLORS: Record<WabaStatus, { bg: string; text: string; dot: string }> = {
+  active: { bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  pending: { bg: 'bg-amber-50', text: 'text-amber-700', dot: 'bg-amber-500' },
+  suspended: { bg: 'bg-orange-50', text: 'text-orange-700', dot: 'bg-orange-500' },
+  banned: { bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
+};
+
+export const PHONE_STATUS_COLORS: Record<PhoneNumberStatus, { bg: string; text: string; dot: string }> = {
+  connected: { bg: 'bg-emerald-50', text: 'text-emerald-700', dot: 'bg-emerald-500' },
+  pending: { bg: 'bg-amber-50', text: 'text-amber-700', dot: 'bg-amber-500' },
+  disconnected: { bg: 'bg-gray-100', text: 'text-gray-600', dot: 'bg-gray-400' },
+  banned: { bg: 'bg-red-50', text: 'text-red-700', dot: 'bg-red-500' },
+};
 
 export const STATUS_COLORS: Record<OnboardingStatus, { bg: string; text: string; dot: string }> = {
   draft: { bg: 'bg-slate-100', text: 'text-slate-700', dot: 'bg-slate-400' },

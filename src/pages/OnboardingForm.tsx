@@ -40,6 +40,8 @@ import { uploadDocumentToStorage, saveDocumentMetadata } from '@/lib/storage';
 const onboardingSchema = z.object({
   brand_name: z.string().min(1, 'Brand Name is required'),
   company_name: z.string().optional(),
+  client_type: z.string().optional(),
+  website: z.string().optional(),
   whatsapp_number: z.string().min(5, 'Valid WhatsApp phone number is required (e.g. +91 98450 12345)'),
   contact_person: z.string().optional(),
   contact_email: z.string().optional(),
@@ -93,6 +95,8 @@ export function OnboardingForm() {
     defaultValues: {
       brand_name: '',
       company_name: '',
+      client_type: 'enterprise',
+      website: '',
       whatsapp_number: '',
       contact_person: '',
       contact_email: '',
@@ -164,6 +168,8 @@ export function OnboardingForm() {
       reset({
         brand_name: existingRecord.brand_name || '',
         company_name: existingRecord.company_name || '',
+        client_type: existingRecord.client_type || 'enterprise',
+        website: existingRecord.website || '',
         whatsapp_number: existingRecord.whatsapp_number || '',
         contact_person: existingRecord.contact_person || '',
         contact_email: existingRecord.contact_email || '',
@@ -228,6 +234,8 @@ export function OnboardingForm() {
         const updatePayload: any = {
           brand_name: data.brand_name.trim(),
           company_name: data.company_name?.trim() || '',
+          client_type: data.client_type || 'enterprise',
+          website: data.website?.trim() || '',
           whatsapp_number: data.whatsapp_number.trim(),
           contact_person: data.contact_person?.trim() || '',
           contact_email: data.contact_email?.trim() || '',
@@ -280,6 +288,8 @@ export function OnboardingForm() {
         const insertPayload: any = {
           brand_name: data.brand_name.trim(),
           company_name: data.company_name?.trim() || '',
+          client_type: data.client_type || 'enterprise',
+          website: data.website?.trim() || '',
           whatsapp_number: data.whatsapp_number.trim(),
           contact_person: data.contact_person?.trim() || '',
           contact_email: data.contact_email?.trim() || '',
@@ -546,6 +556,38 @@ export function OnboardingForm() {
                   {...register('contact_number')}
                   type="text"
                   placeholder="+91 80 2559 1080"
+                  className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Client Type
+              </label>
+              <select
+                {...register('client_type')}
+                className="w-full px-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF] text-gray-700"
+              >
+                <option value="enterprise">Enterprise</option>
+                <option value="smb">SMB</option>
+                <option value="startup">Startup</option>
+                <option value="agency">Agency</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-xs font-semibold text-gray-700 uppercase tracking-wider mb-1">
+                Company Website
+              </label>
+              <div className="relative">
+                <Globe className="w-4 h-4 text-gray-400 absolute left-3 top-2.5" />
+                <input
+                  {...register('website')}
+                  type="url"
+                  placeholder="https://prestige.com"
                   className="w-full pl-9 pr-3.5 py-2 text-xs bg-gray-50 border border-gray-200 rounded-xl focus:outline-hidden focus:ring-2 focus:ring-[#1677FF]"
                 />
               </div>
