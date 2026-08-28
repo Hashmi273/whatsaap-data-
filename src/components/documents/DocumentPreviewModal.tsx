@@ -1,11 +1,12 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Download, FileText, ExternalLink, ShieldCheck, AlertCircle, FileImage, RefreshCw } from 'lucide-react';
 import type { OnboardingDocument } from '@/types/database';
 import { formatCategoryLabel } from '@/types/database';
+import { getDocumentPreviewUrl } from '@/lib/download';
 
 interface DocumentPreviewModalProps {
   document: OnboardingDocument | null;
-  signedUrl: string | null;
+  signedUrl?: string | null;
   onClose: () => void;
   onDownload: () => void;
 }
@@ -16,8 +17,47 @@ export function DocumentPreviewModal({
   onClose,
   onDownload,
 }: DocumentPreviewModalProps) {
+  const [resolvedUrl, setResolvedUrl] = useState<string | null>(signedUrl || null);
+  const [isLoading, setIsLoading] = useState(true);
   const [imgError, setImgError] = useState(false);
   const [iframeError, setIframeError] = useState(false);
+
+  useEffect(() => {
+    let isMounted = true;
+    setImgError(false);
+    setIframeError(false);
+
+    if (!document) {
+      setResolvedUrl(null);
+      setIsLoading(false);
+      return;
+    }
+
+    if (signedUrl) {
+      setResolvedUrl(signedUrl);
+      setIsLoading(false);
+      return;
+    }
+
+    setIsLoading(true);
+    getDocumentPreviewUrl(document)
+      .then((url) => {
+        if (isMounted) {
+          setResolvedUrl(url);
+          setIsLoading(false);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setResolvedUrl(null);
+          setIsLoading(false);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [document, signedUrl]);
 
   if (!document) return null;
 
@@ -65,13 +105,25 @@ export function DocumentPreviewModal({
                 </span>
                 <span className="text-xs text-gray-500 flex items-center gap-1">
                   <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
-                  Private Supabase Vault • Active Verified Token
+                  Private Vault • Authenticated Token
                 </span>
               </div>
             </div>
           </div>
 
           <div className="flex items-center gap-2 flex-shrink-0 ml-4">
+            {resolvedUrl && (
+              <a
+                href={resolvedUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="hidden sm:inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-xl transition-colors cursor-pointer"
+                title="Open in new window"
+              >
+                <ExternalLink className="w-3.5 h-3.5" />
+                Pop Out
+              </a>
+            )}
             <button
               onClick={onDownload}
               className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-[#1677FF] hover:bg-[#0B5FE0] rounded-xl transition-all shadow-xs cursor-pointer"
@@ -90,11 +142,21 @@ export function DocumentPreviewModal({
 
         {/* Content Viewer */}
         <div className="flex-1 p-6 bg-slate-900/5 overflow-y-auto flex items-center justify-center min-h-[420px]">
-          {isImage && (
-            !imgError && signedUrl ? (
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center p-12 space-y-4 text-center">
+              <div className="p-3 bg-blue-50 text-[#1677FF] rounded-2xl">
+                <RefreshCw className="w-8 h-8 animate-spin" />
+              </div>
+              <div>
+                <h4 className="font-bold text-gray-900 text-sm">Retrieving Vault Object...</h4>
+                <p className="text-xs text-gray-500 mt-1">Generating secure short-lived preview session.</p>
+              </div>
+            </div>
+          ) : isImage ? (
+            !imgError && resolvedUrl ? (
               <div className="flex flex-col items-center justify-center max-h-[70vh] w-full">
                 <img
-                  src={signedUrl}
+                  src={resolvedUrl}
                   alt={fileName}
                   onError={() => setImgError(true)}
                   className="max-h-[65vh] max-w-full rounded-2xl shadow-lg object-contain bg-white p-2 border border-gray-200"
@@ -119,13 +181,11 @@ export function DocumentPreviewModal({
                 </button>
               </div>
             )
-          )}
-
-          {isPdf && (
-            !iframeError && signedUrl ? (
+          ) : isPdf ? (
+            !iframeError && resolvedUrl ? (
               <div className="w-full h-[70vh] bg-white rounded-2xl shadow-sm border border-gray-300 overflow-hidden">
                 <iframe
-                  src={`${signedUrl}#toolbar=0`}
+                  src={`${resolvedUrl}#toolbar=0`}
                   title={fileName}
                   onError={() => setIframeError(true)}
                   className="w-full h-full border-0"
@@ -150,9 +210,7 @@ export function DocumentPreviewModal({
                 </button>
               </div>
             )
-          )}
-
-          {!isPdf && !isImage && (
+          ) : (
             <div className="text-center p-8 bg-white rounded-3xl shadow-sm border border-gray-200 max-w-md space-y-4">
               <div className="w-16 h-16 bg-blue-50 text-[#1677FF] rounded-2xl flex items-center justify-center mx-auto">
                 <FileText className="w-8 h-8" />
@@ -161,7 +219,7 @@ export function DocumentPreviewModal({
                 <h4 className="font-bold text-gray-900 text-sm">{fileName}</h4>
                 <p className="text-xs text-gray-500 mt-1">
                   {isDocx
-                    ? 'Word document (.docx) is encrypted and vaulted. Download to view in MS Word or Google Docs.'
+                    ? 'Word document (.docx) is vaulted. Download to view in MS Word or Google Docs.'
                     : `Direct preview is not supported for ${document.mime_type || 'this format'}.`}
                 </p>
               </div>

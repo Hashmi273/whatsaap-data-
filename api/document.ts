@@ -452,7 +452,16 @@ export default async function handler(req: IncomingMessage & { body?: any }, res
       const arrayBuf = await downloadRes.arrayBuffer();
       const buffer = Buffer.from(arrayBuf);
       const fileName = customName || cleanPath.split('/').pop() || 'document';
-      const contentType = downloadRes.headers.get('content-type') || 'application/octet-stream';
+      const fileNameLower = fileName.toLowerCase();
+      let contentType = downloadRes.headers.get('content-type') || '';
+      if (!contentType || contentType === 'application/octet-stream') {
+        if (fileNameLower.endsWith('.pdf')) contentType = 'application/pdf';
+        else if (fileNameLower.endsWith('.png')) contentType = 'image/png';
+        else if (fileNameLower.endsWith('.jpg') || fileNameLower.endsWith('.jpeg')) contentType = 'image/jpeg';
+        else if (fileNameLower.endsWith('.webp')) contentType = 'image/webp';
+        else if (fileNameLower.endsWith('.svg')) contentType = 'image/svg+xml';
+        else contentType = 'application/octet-stream';
+      }
 
       res.statusCode = 200;
       res.setHeader('Content-Type', contentType);

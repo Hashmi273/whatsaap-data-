@@ -13,6 +13,17 @@ interface DownloadOptions {
 
 let activeDownloads = new Set<string>();
 
+function getMimeType(fileName: string, mimeType?: string): string {
+  if (mimeType && mimeType !== 'application/octet-stream') return mimeType;
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.pdf')) return 'application/pdf';
+  if (lower.endsWith('.png')) return 'image/png';
+  if (lower.endsWith('.jpg') || lower.endsWith('.jpeg')) return 'image/jpeg';
+  if (lower.endsWith('.webp')) return 'image/webp';
+  if (lower.endsWith('.svg')) return 'image/svg+xml';
+  return mimeType || 'application/octet-stream';
+}
+
 /**
  * Resolves a valid signed URL or Blob Object URL for document preview.
  */
@@ -43,13 +54,15 @@ export async function getDocumentPreviewUrl(doc: {
       .download(doc.storage_path);
 
     if (!downloadErr && blobData && blobData.size > 0) {
-      return URL.createObjectURL(blobData);
+      const mime = getMimeType(doc.file_name, doc.mime_type || blobData.type);
+      const typedBlob = new Blob([blobData], { type: mime });
+      return URL.createObjectURL(typedBlob);
     }
   } catch {
     // Ignore
   }
 
-  // 3. Fetch via authenticated serverless download API and create Blob URL
+  // 3. Fetch via authenticated serverless download API (exact same as downloadDocument)
   try {
     const token = await getAuthBearerToken();
     const headers: Record<string, string> = {};
@@ -59,9 +72,11 @@ export async function getDocumentPreviewUrl(doc: {
     const res = await fetch(endpoint, { headers });
 
     if (res.ok) {
-      const blob = await res.blob();
-      if (blob && blob.size > 0) {
-        return URL.createObjectURL(blob);
+      const rawBlob = await res.blob();
+      if (rawBlob && rawBlob.size > 0) {
+        const mime = getMimeType(doc.file_name, doc.mime_type || rawBlob.type);
+        const typedBlob = new Blob([rawBlob], { type: mime });
+        return URL.createObjectURL(typedBlob);
       }
     }
   } catch {
